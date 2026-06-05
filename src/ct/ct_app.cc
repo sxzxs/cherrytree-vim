@@ -23,6 +23,9 @@
 
 #include <glib/gstdio.h>
 #include "ct_app.h"
+#ifdef HAVE_ZMQ_REMOTE
+#include "ct_zmq_remote.h"
+#endif
 #if GTKMM_MAJOR_VERSION >= 4 && defined(_WIN32)
 #include <windows.h>
 #include <gdk/win32/gdkwin32.h>
@@ -34,6 +37,9 @@
 #include <iostream>
 
 namespace {
+constexpr gint64 ZMQ_REMOTE_NODE_DATE_FROM_ROOT = 999999999;
+constexpr gint64 ZMQ_REMOTE_NOOP = 999999998;
+
 void queue_focus_node(CtMainWin* pCtMainWin, const Glib::ustring& node_to_focus, const Glib::ustring& anchor_to_focus)
 {
     if (not pCtMainWin || node_to_focus.empty()) {
@@ -53,6 +59,47 @@ void queue_focus_node(CtMainWin* pCtMainWin, const Glib::ustring& node_to_focus,
             spdlog::warn("{} No node named '{}' found.", __FUNCTION__, node_to_focus.c_str());
         }
     });
+}
+
+CtMainWin* find_target_main_window(CtApp* pApp)
+{
+    CtMainWin* pFirstWin = nullptr;
+    CtMainWin* pVisibleWin = nullptr;
+
+    for (Gtk::Window* pWin : pApp->get_windows()) {
+        if (CtMainWin* pCtMainWin = dynamic_cast<CtMainWin*>(pWin)) {
+            if (not pFirstWin) {
+                pFirstWin = pCtMainWin;
+            }
+            if (pWin->get_visible()) {
+                pVisibleWin = pCtMainWin;
+                if (pWin->is_active()) {
+                    return pCtMainWin;
+                }
+            }
+        }
+    }
+
+    return pVisibleWin ? pVisibleWin : pFirstWin;
+}
+
+void focus_node_by_id(CtMainWin* pCtMainWin, const gint64 node_id)
+{
+    if (not pCtMainWin) {
+        return;
+    }
+
+    CtTreeIter node = pCtMainWin->get_tree_store().get_node_from_node_id(node_id);
+    if (node) {
+        pCtMainWin->get_tree_view().collapse_all();
+        pCtMainWin->get_tree_view().set_cursor_safe(node);
+        pCtMainWin->get_tree_view().scroll_to_row(pCtMainWin->get_tree_store().get_path(node));
+        pCtMainWin->get_text_view().mm().grab_focus();
+        pCtMainWin->get_text_view().cursor_and_tooltips_reset();
+    }
+    else {
+        spdlog::warn("{} No node with id '{}' found.", __FUNCTION__, node_id);
+    }
 }
 
 #if GTKMM_MAJOR_VERSION >= 4 && defined(_WIN32)
@@ -166,6 +213,30 @@ CtApp::~CtApp()
 {
 }
 
+#ifdef HAVE_ZMQ_REMOTE
+void CtApp::zmq_remote_command_received(gint64 command)
+{
+    CtMainWin* pTargetWin = find_target_main_window(this);
+    if (not pTargetWin) {
+        spdlog::warn("{} No main window available for command {}", __FUNCTION__, command);
+        return;
+    }
+
+    pTargetWin->set_visible(true);
+    present_main_window(pTargetWin);
+
+    if (ZMQ_REMOTE_NODE_DATE_FROM_ROOT == command) {
+        pTargetWin->get_ct_actions()->node_date_from_root();
+        return;
+    }
+    if (ZMQ_REMOTE_NOOP == command) {
+        return;
+    }
+
+    focus_node_by_id(pTargetWin, command);
+}
+#endif
+
 /*static*/Glib::RefPtr<CtApp> CtApp::create(const Glib::ustring application_id_postfix)
 {
 #if GTKMM_MAJOR_VERSION >= 4
@@ -255,6 +326,18 @@ void CtApp::_on_startup()
         // SIGKILL cannot be handled or ignored, and is therefore always fatal
     }
 }
+
+#ifdef HAVE_ZMQ_REMOTE
+void CtApp::_ensure_zmq_remote_started()
+{
+    if (_no_gui or _uZmqRemote) {
+        return;
+    }
+
+    _uZmqRemote = std::make_unique<CtZmqRemote>(*this);
+    _uZmqRemote->start();
+}
+#endif
 
 void CtApp::on_activate()
 {
@@ -483,6 +566,12 @@ CtMainWin* CtApp::_create_window(const bool no_gui)
         }
         pCtMainWin->tree_node_paste_from_other_window(dynamic_cast<CtMainWin*>(pWinToCopyFromValidated), _nodeIdToCopyFrom);
     });
+
+#ifdef HAVE_ZMQ_REMOTE
+    if (not no_gui) {
+        _ensure_zmq_remote_started();
+    }
+#endif
 
     return pCtMainWin;
 }

@@ -23,6 +23,9 @@
 
 #pragma once
 
+#include <memory>
+#include <mutex>
+
 #include <glibmm/i18n.h>
 #include <gtkmm.h>
 
@@ -33,6 +36,7 @@
 #include "ct_widgets.h"
 
 class CtMainWin;
+class CtZmqRemote;
 class CtApp : public Gtk::Application
 {
 protected:
@@ -46,6 +50,9 @@ protected:
 public:
     static Glib::RefPtr<CtApp> create(const Glib::ustring application_id_postfix = Glib::ustring{});
     void                       close_all_windows(const bool fromKillCallback);
+#ifdef HAVE_ZMQ_REMOTE
+    void                       zmq_remote_command_received(gint64 command);
+#endif
 #if GTKMM_MAJOR_VERSION < 4 && !defined(GTKMM_DISABLE_DEPRECATED)
     void                       systray_show_hide_windows();
 #endif /* GTKMM_MAJOR_VERSION < 4 && !defined(GTKMM_DISABLE_DEPRECATED) */
@@ -83,6 +90,9 @@ protected:
     void        _on_startup();
     void        _add_main_option_entries();
     void        _print_gresource_icons();
+#ifdef HAVE_ZMQ_REMOTE
+    void        _ensure_zmq_remote_started();
+#endif
 
 protected:
     CtMainWin*  _create_window(const bool no_gui = false);
@@ -93,4 +103,7 @@ protected:
 private:
     Gtk::Window* _pWinToCopyFrom{nullptr};
     gint64       _nodeIdToCopyFrom;
+#ifdef HAVE_ZMQ_REMOTE
+    std::unique_ptr<CtZmqRemote> _uZmqRemote;
+#endif
 };

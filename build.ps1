@@ -13,6 +13,7 @@ param(
     [switch] $BundledSpdlogFmt,
     [switch] $Gtk4,
     [switch] $NoNls,
+    [switch] $NoZmqRemote,
     [string] $Msys2Root
 )
 
@@ -117,6 +118,7 @@ $env:CT_RUN_TESTS = $(if ($RunTests) { "1" } else { "0" })
 $env:CT_USE_SHARED_FMT_SPDLOG = $(if ($BundledSpdlogFmt) { "OFF" } else { "ON" })
 $env:CT_WITH_GTK4 = $(if ($Gtk4) { "ON" } else { "OFF" })
 $env:CT_USE_NLS = $(if ($NoNls) { "OFF" } else { "ON" })
+$env:CT_USE_ZMQ_REMOTE = $(if ($NoZmqRemote) { "OFF" } else { "ON" })
 
 $bashScript = @'
 set -euo pipefail
@@ -139,6 +141,7 @@ cmake -S "$repo" -B "$build_dir" -GNinja \
   -DUSE_SHARED_FMT_SPDLOG="$CT_USE_SHARED_FMT_SPDLOG" \
   -DWITH_GTK4="$CT_WITH_GTK4" \
   -DUSE_NLS="$CT_USE_NLS" \
+  -DUSE_ZMQ_REMOTE="$CT_USE_ZMQ_REMOTE" \
   $([ "$CT_BUILD_TESTING" = "ON" ] && echo "-DAUTO_RUN_TESTING=OFF")
 
 cmake --build "$build_dir" --parallel "$CT_JOBS"

@@ -29,6 +29,7 @@ option(NO_DEPRECATED "Build with deprecated API disabled" OFF)
 option(USE_NLS "Add locales support" ON)
 option(USE_SHARED_FMT_SPDLOG "Use shared fmt and spdlog (not those bundled)" ON)
 option(USE_SHARED_GTEST_GMOCK "Use shared gtest and gmock (not those bundled)" OFF)
+option(USE_ZMQ_REMOTE "Enable ZeroMQ remote command receiver" ON)
 if(WIN32)
   option(USE_VTE "Add virtual terminal support" OFF)
 else()
@@ -107,6 +108,9 @@ endif()
 if(USE_VTE)
   add_definitions(-DHAVE_VTE)
 endif()
+if(USE_ZMQ_REMOTE)
+  add_definitions(-DHAVE_ZMQ_REMOTE)
+endif()
 
 # temporarily disable these warnings: Only <gtksourceview/gtksource.h> can be included directly.
 if("${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU")
@@ -181,6 +185,9 @@ pkg_check_modules(SQLITE sqlite3 REQUIRED)
 pkg_check_modules(CURL libcurl REQUIRED)
 pkg_check_modules(UCHARDET uchardet REQUIRED)
 pkg_check_modules(FRIBIDI fribidi REQUIRED)
+if(USE_ZMQ_REMOTE)
+  pkg_check_modules(ZMQ libzmq REQUIRED)
+endif()
 if(USE_SHARED_FMT_SPDLOG)
   message("Using fmt, spdlog from: SHARED LIB")
   pkg_check_modules(FMT fmt>=6.0 REQUIRED)
@@ -214,6 +221,11 @@ include_directories(
   SYSTEM ${FRIBIDI_INCLUDE_DIRS}
   . # config.h
 )
+if(USE_ZMQ_REMOTE)
+  include_directories(
+    SYSTEM ${ZMQ_INCLUDE_DIRS}
+  )
+endif()
 if(CT_USE_GSPELL)
   include_directories(
     SYSTEM ${GSPELL_INCLUDE_DIRS}

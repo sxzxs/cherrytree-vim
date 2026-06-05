@@ -82,6 +82,11 @@ set(CT_SHARED_FILES
   ct_filesystem.cc
   ct_column_edit.cc
 )
+if(USE_ZMQ_REMOTE)
+  list(APPEND CT_SHARED_FILES
+    ct_zmq_remote.cc
+  )
+endif()
 
 add_library(cherrytree_shared STATIC ${CT_SHARED_FILES})
 target_link_libraries(cherrytree_shared
@@ -97,6 +102,11 @@ target_link_libraries(cherrytree_shared
   pthread
   7za_static
 )
+if(USE_ZMQ_REMOTE)
+  target_link_libraries(cherrytree_shared
+    ${ZMQ_LIBRARIES}
+  )
+endif()
 if(CT_USE_GSPELL)
   target_link_libraries(cherrytree_shared
     ${GSPELL_LIBRARIES}
