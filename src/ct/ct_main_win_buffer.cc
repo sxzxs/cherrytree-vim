@@ -224,17 +224,27 @@ void CtMainWin::apply_scalable_properties(Glib::RefPtr<Gtk::TextTag> rTextTag, C
     if (not pCtScalableTag->background.empty()) {
         rTextTag->property_background() = pCtScalableTag->background;
     }
-    #if GTKMM_MAJOR_VERSION < 4
     if (pCtScalableTag->bold) {
+    #if GTKMM_MAJOR_VERSION >= 4
+        rTextTag->property_weight() = Pango::Weight::HEAVY;
+    #else
         rTextTag->property_weight() = Pango::Weight::WEIGHT_HEAVY;
+    #endif
     }
     if (pCtScalableTag->italic) {
+    #if GTKMM_MAJOR_VERSION >= 4
+        rTextTag->property_style() = Pango::Style::ITALIC;
+    #else
         rTextTag->property_style() = Pango::Style::STYLE_ITALIC;
+    #endif
     }
     if (pCtScalableTag->underline) {
+    #if GTKMM_MAJOR_VERSION >= 4
+        rTextTag->property_underline() = Pango::Underline::SINGLE;
+    #else
         rTextTag->property_underline() = Pango::Underline::UNDERLINE_SINGLE;
-    }
     #endif
+    }
 }
 
 std::string CtMainWin::get_text_tag_name_exist_or_create(const std::string& propertyName,
@@ -250,7 +260,9 @@ std::string CtMainWin::get_text_tag_name_exist_or_create(const std::string& prop
             rTextTag->property_indent() = 0;
         }
         else if (CtConst::TAG_WEIGHT == propertyName and CtConst::TAG_PROP_VAL_HEAVY == propertyValue) {
-        #if GTKMM_MAJOR_VERSION < 4
+        #if GTKMM_MAJOR_VERSION >= 4
+            rTextTag->property_weight() = Pango::Weight::HEAVY;
+        #else
             rTextTag->property_weight() = Pango::Weight::WEIGHT_HEAVY;
         #endif
         }
@@ -301,12 +313,16 @@ std::string CtMainWin::get_text_tag_name_exist_or_create(const std::string& prop
             rTextTag->property_invisible() = true;
         }
         else if (CtConst::TAG_STYLE == propertyName and CtConst::TAG_PROP_VAL_ITALIC == propertyValue) {
-        #if GTKMM_MAJOR_VERSION < 4
+        #if GTKMM_MAJOR_VERSION >= 4
+            rTextTag->property_style() = Pango::Style::ITALIC;
+        #else
             rTextTag->property_style() = Pango::Style::STYLE_ITALIC;
         #endif
         }
         else if (CtConst::TAG_UNDERLINE == propertyName and CtConst::TAG_PROP_VAL_SINGLE == propertyValue) {
-        #if GTKMM_MAJOR_VERSION < 4
+        #if GTKMM_MAJOR_VERSION >= 4
+            rTextTag->property_underline() = Pango::Underline::SINGLE;
+        #else
             rTextTag->property_underline() = Pango::Underline::UNDERLINE_SINGLE;
         #endif
         }
@@ -328,8 +344,21 @@ std::string CtMainWin::get_text_tag_name_exist_or_create(const std::string& prop
                 identified = false;
             }
 #else
-            // gtkmm4: justification enum removed; skipping property assignment
-            identified = false;
+            if (CtConst::TAG_PROP_VAL_LEFT == propertyValue) {
+                rTextTag->property_justification() = Gtk::Justification::LEFT;
+            }
+            else if (CtConst::TAG_PROP_VAL_RIGHT == propertyValue) {
+                rTextTag->property_justification() = Gtk::Justification::RIGHT;
+            }
+            else if (CtConst::TAG_PROP_VAL_CENTER == propertyValue) {
+                rTextTag->property_justification() = Gtk::Justification::CENTER;
+            }
+            else if (CtConst::TAG_PROP_VAL_FILL == propertyValue) {
+                rTextTag->property_justification() = Gtk::Justification::FILL;
+            }
+            else {
+                identified = false;
+            }
 #endif
         }
         else if (CtConst::TAG_FAMILY == propertyName and CtConst::TAG_PROP_VAL_MONOSPACE == propertyValue) {
@@ -352,7 +381,9 @@ std::string CtMainWin::get_text_tag_name_exist_or_create(const std::string& prop
         }
         else if (CtConst::TAG_LINK == propertyName and propertyValue.size() > 4) {
             if (_pCtConfig->linksUnderline) {
-            #if GTKMM_MAJOR_VERSION < 4
+            #if GTKMM_MAJOR_VERSION >= 4
+                rTextTag->property_underline() = Pango::Underline::SINGLE;
+            #else
                 rTextTag->property_underline() = Pango::Underline::UNDERLINE_SINGLE;
             #endif
             }

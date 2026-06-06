@@ -32,12 +32,122 @@
 #include "ct_actions.h"
 #include "ct_storage_xml.h"
 #include <gio/gio.h> // to get mime type
+#if GTKMM_MAJOR_VERSION >= 4 || defined(GTKMM_DISABLE_DEPRECATED)
+#include <giomm/inputstream.h>
+#include <gdkmm/contentprovider.h>
+#include <glibmm/value.h>
+#endif
 #include <glibmm/regex.h>
 #include "ct_logging.h"
 #include "ct_parser.h"
+#include <algorithm>
+#include <functional>
 
 bool CtClipboard::_static_force_plain_text{false};
 bool CtClipboard::_static_from_column_edit{false};
+
+#if GTKMM_MAJOR_VERSION >= 4 || defined(GTKMM_DISABLE_DEPRECATED)
+namespace {
+constexpr const char* CT_MIME_RICH_TEXT = "application/x-cherrytree-rich-text";
+constexpr const char* CT_MIME_CODEBOX = "application/x-cherrytree-codebox";
+constexpr const char* CT_MIME_TABLE = "application/x-cherrytree-table";
+constexpr const char* CT_MIME_PLAIN_TEXT = "text/plain;charset=utf-8";
+
+Glib::RefPtr<Gdk::ContentProvider> gtk4_content_provider_from_bytes(const Glib::ustring& mime_type,
+                                                                    const Glib::ustring& text)
+{
+    return Gdk::ContentProvider::create(mime_type, Glib::Bytes::create(text.c_str(), text.bytes()));
+}
+
+void gtk4_add_text_provider(std::vector<Glib::RefPtr<Gdk::ContentProvider>>& providers,
+                            const Glib::ustring& plain_text)
+{
+    if (plain_text.empty()) {
+        return;
+    }
+    Glib::Value<Glib::ustring> value;
+    value.init(Glib::Value<Glib::ustring>::value_type());
+    value.set(plain_text);
+    providers.push_back(Gdk::ContentProvider::create(value));
+    providers.push_back(gtk4_content_provider_from_bytes(CT_MIME_PLAIN_TEXT, plain_text));
+    providers.push_back(gtk4_content_provider_from_bytes("text/plain", plain_text));
+}
+
+Glib::ustring gtk4_read_stream_to_ustring(const Glib::RefPtr<Gio::InputStream>& stream)
+{
+    if (!stream) {
+        return {};
+    }
+    std::string data;
+    char buffer[4096];
+    while (true) {
+        const gssize bytes_read = stream->read(buffer, sizeof(buffer));
+        if (bytes_read <= 0) {
+            break;
+        }
+        data.append(buffer, static_cast<size_t>(bytes_read));
+    }
+    return str::sanitize_bad_symbols(Glib::ustring{data});
+}
+
+guint8 gtk4_unpremultiply_argb_channel(guint8 channel, guint8 alpha)
+{
+    if (0 == alpha) {
+        return 0;
+    }
+    const unsigned int value = static_cast<unsigned int>(channel) * 255u + static_cast<unsigned int>(alpha) / 2u;
+    return static_cast<guint8>(std::min(value / static_cast<unsigned int>(alpha), 255u));
+}
+
+Glib::RefPtr<Gdk::Pixbuf> gtk4_texture_to_pixbuf(const Glib::RefPtr<Gdk::Texture>& texture)
+{
+    if (!texture) {
+        return {};
+    }
+    const int width = texture->get_width();
+    const int height = texture->get_height();
+    if (width <= 0 or height <= 0) {
+        return {};
+    }
+
+    const int src_stride = width * 4;
+    std::vector<guchar> source(static_cast<size_t>(src_stride) * static_cast<size_t>(height));
+    texture->download(source.data(), static_cast<gsize>(src_stride));
+
+    auto pixbuf = Gdk::Pixbuf::create(Gdk::Colorspace::RGB, true/*has_alpha*/, 8, width, height);
+    if (!pixbuf) {
+        return {};
+    }
+
+    guchar* const dest = pixbuf->get_pixels();
+    const int dest_stride = pixbuf->get_rowstride();
+    for (int y = 0; y < height; ++y) {
+        const guchar* const src_row = source.data() + static_cast<size_t>(y) * static_cast<size_t>(src_stride);
+        guchar* const dest_row = dest + static_cast<size_t>(y) * static_cast<size_t>(dest_stride);
+        for (int x = 0; x < width; ++x) {
+            const guchar* const src = src_row + x * 4;
+            guchar* const dst = dest_row + x * 4;
+#if G_BYTE_ORDER == G_LITTLE_ENDIAN
+            const guint8 blue = src[0];
+            const guint8 green = src[1];
+            const guint8 red = src[2];
+            const guint8 alpha = src[3];
+#else
+            const guint8 alpha = src[0];
+            const guint8 red = src[1];
+            const guint8 green = src[2];
+            const guint8 blue = src[3];
+#endif
+            dst[0] = gtk4_unpremultiply_argb_channel(red, alpha);
+            dst[1] = gtk4_unpremultiply_argb_channel(green, alpha);
+            dst[2] = gtk4_unpremultiply_argb_channel(blue, alpha);
+            dst[3] = alpha;
+        }
+    }
+    return pixbuf;
+}
+}
+#endif
 
 CtClipboard::CtClipboard(CtMainWin* pCtMainWin)
  : _pCtMainWin{pCtMainWin}
@@ -142,7 +252,132 @@ void CtClipboard::_paste_clipboard(Gtk::TextView* pTextView, CtCodebox* pCodebox
 {
     auto on_scope_exit = scope_guard([&](void*) { CtClipboard::_static_force_plain_text = false; });
 #if GTKMM_MAJOR_VERSION >= 4
-    (void)pTextView; (void)pCodebox; return;
+    g_signal_stop_emission_by_name(G_OBJECT(pTextView->gobj()), "paste-clipboard");
+    if (_pCtMainWin->curr_tree_iter().get_node_read_only()) {
+        return;
+    }
+    auto display = Gdk::Display::get_default();
+    if (!display) {
+        return;
+    }
+    auto clipboard = display->get_clipboard();
+    if (!clipboard) {
+        return;
+    }
+    auto text_buffer = pTextView->get_buffer();
+    text_buffer->erase_selection(true, pTextView->get_editable());
+
+    const bool is_rich_text = not pCodebox and _pCtMainWin->curr_tree_iter().get_node_is_rich_text();
+    const bool force_plain_text = CtClipboard::_static_force_plain_text or not is_rich_text;
+    CtMainWin* win = _pCtMainWin;
+    const bool allow_image = is_rich_text;
+    std::function<void()> read_image = [clipboard, win, pTextView, allow_image]() {
+        if (!allow_image) {
+            return;
+        }
+        clipboard->read_texture_async([clipboard, win, pTextView](const Glib::RefPtr<Gio::AsyncResult>& result) {
+            try {
+                auto texture = clipboard->read_texture_finish(result);
+                if (!texture) {
+                    spdlog::debug("GTK4 clipboard has no image texture");
+                    return;
+                }
+                CtClipboard{win}.on_received_to_image_gtk4(texture, pTextView);
+            }
+            catch (const Glib::Error& e) {
+                spdlog::debug("GTK4 clipboard image read failed: {}", e.what());
+            }
+        });
+    };
+    std::function<void()> read_plain_text = [clipboard, win, pTextView, force_plain_text, read_image]() {
+        clipboard->read_text_async([clipboard, win, pTextView, force_plain_text, read_image](const Glib::RefPtr<Gio::AsyncResult>& result) {
+            try {
+                Glib::ustring text = str::sanitize_bad_symbols(clipboard->read_text_finish(result));
+                if (text.empty()) {
+                    spdlog::error("? no clipboard plain text");
+                    read_image();
+                    return;
+                }
+                CtClipboard clipb{win};
+                const Glib::ustring text_trimmed = str::trim(text);
+                if (not force_plain_text and (str::startswith(text_trimmed, "<?xml") or str::startswith(text_trimmed, "<root"))) {
+                    try {
+                        clipb.on_received_to_rich_text_gtk4(text, pTextView);
+                        return;
+                    }
+                    catch (const std::exception& e) {
+                        spdlog::warn("GTK4 rich clipboard parse failed, falling back to plain text: {}", e.what());
+                    }
+                }
+                clipb.on_received_to_plain_text_gtk4(text, pTextView, force_plain_text);
+            }
+            catch (const Glib::Error& e) {
+                spdlog::error("GTK4 clipboard plain text read failed: {}", e.what());
+                read_image();
+            }
+        });
+    };
+    if (force_plain_text) {
+        read_plain_text();
+        return;
+    }
+
+    const std::vector<Glib::ustring> mime_types{
+        CT_MIME_RICH_TEXT,
+        CT_MIME_CODEBOX,
+        CT_MIME_TABLE,
+        CtConst::TARGETS_HTML[0],
+        CtConst::TARGET_URI_LIST,
+        CT_MIME_PLAIN_TEXT,
+        "text/plain"
+    };
+    clipboard->read_async(mime_types, Glib::PRIORITY_DEFAULT, [clipboard, win, pTextView, read_plain_text](const Glib::RefPtr<Gio::AsyncResult>& result) {
+        try {
+            Glib::ustring mime_type;
+            const Glib::ustring text = gtk4_read_stream_to_ustring(clipboard->read_finish(result, mime_type));
+            if (text.empty()) {
+                read_plain_text();
+                return;
+            }
+            CtClipboard clipb{win};
+            if (mime_type == CT_MIME_RICH_TEXT) {
+                clipb.on_received_to_rich_text_gtk4(text, pTextView);
+            }
+            else if (mime_type == CT_MIME_CODEBOX) {
+                clipb.on_received_to_codebox_gtk4(text, pTextView);
+            }
+            else if (mime_type == CT_MIME_TABLE) {
+                clipb.on_received_to_table_gtk4(text, pTextView, false/*is_column*/, nullptr);
+            }
+            else if (mime_type == CtConst::TARGETS_HTML[0]) {
+                clipb.on_received_to_html_gtk4(text, pTextView);
+            }
+            else if (mime_type == CtConst::TARGET_URI_LIST) {
+                clipb.on_received_to_uri_list_gtk4(text, pTextView, false/*forcePlain*/);
+            }
+            else {
+                const Glib::ustring text_trimmed = str::trim(text);
+                if (str::startswith(text_trimmed, "<?xml") or str::startswith(text_trimmed, "<root")) {
+                    try {
+                        clipb.on_received_to_rich_text_gtk4(text, pTextView);
+                        return;
+                    }
+                    catch (const std::exception& e) {
+                        spdlog::warn("GTK4 rich clipboard parse failed, falling back to plain text: {}", e.what());
+                    }
+                }
+                clipb.on_received_to_plain_text_gtk4(text, pTextView, false/*force_plain_text*/);
+            }
+        }
+        catch (const Glib::Error& e) {
+            spdlog::warn("GTK4 clipboard multi-format read failed: {}", e.what());
+            read_plain_text();
+        }
+        catch (const std::exception& e) {
+            spdlog::error("GTK4 clipboard paste failed: {}", e.what());
+        }
+    });
+    return;
 #else
     g_signal_stop_emission_by_name(G_OBJECT(pTextView->gobj()), "paste-clipboard");
     if (_pCtMainWin->curr_tree_iter().get_node_read_only())
@@ -253,7 +488,28 @@ void CtClipboard::table_row_paste(CtTableCommon* pTable)
         Gtk::Clipboard::get()->request_contents(CtConst::TARGET_CTD_TABLE, received_table);
     }
 #else
-    (void)pTable; // TODO GTK4 table paste
+    auto display = Gdk::Display::get_default();
+    if (!display) {
+        return;
+    }
+    auto clipboard = display->get_clipboard();
+    if (!clipboard) {
+        return;
+    }
+    auto win = _pCtMainWin;
+    Gtk::TextView* view = &_pCtMainWin->get_text_view().mm();
+    clipboard->read_async({CT_MIME_TABLE}, Glib::PRIORITY_DEFAULT, [clipboard, win, view, pTable](const Glib::RefPtr<Gio::AsyncResult>& result) {
+        try {
+            Glib::ustring mime_type;
+            const Glib::ustring xml_text = gtk4_read_stream_to_ustring(clipboard->read_finish(result, mime_type));
+            if (!xml_text.empty()) {
+                CtClipboard{win}.on_received_to_table_gtk4(xml_text, view, false/*is_column*/, pTable);
+            }
+        }
+        catch (const Glib::Error& e) {
+            spdlog::warn("GTK4 table row clipboard read failed: {}", e.what());
+        }
+    });
 #endif
 }
 
@@ -279,7 +535,28 @@ void CtClipboard::table_column_paste(CtTableCommon* pTable)
         Gtk::Clipboard::get()->request_contents(CtConst::TARGET_CTD_TABLE, received_table);
     }
 #else
-    (void)pTable; // TODO GTK4 column paste
+    auto display = Gdk::Display::get_default();
+    if (!display) {
+        return;
+    }
+    auto clipboard = display->get_clipboard();
+    if (!clipboard) {
+        return;
+    }
+    auto win = _pCtMainWin;
+    Gtk::TextView* view = &_pCtMainWin->get_text_view().mm();
+    clipboard->read_async({CT_MIME_TABLE}, Glib::PRIORITY_DEFAULT, [clipboard, win, view, pTable](const Glib::RefPtr<Gio::AsyncResult>& result) {
+        try {
+            Glib::ustring mime_type;
+            const Glib::ustring xml_text = gtk4_read_stream_to_ustring(clipboard->read_finish(result, mime_type));
+            if (!xml_text.empty()) {
+                CtClipboard{win}.on_received_to_table_gtk4(xml_text, view, true/*is_column*/, pTable);
+            }
+        }
+        catch (const Glib::Error& e) {
+            spdlog::warn("GTK4 table column clipboard read failed: {}", e.what());
+        }
+    });
 #endif
 }
 
@@ -502,18 +779,64 @@ void CtClipboard::_set_clipboard_data(const std::vector<std::string>& targets_li
     };
     Gtk::Clipboard::get()->set(target_entries, clip_data_get, clip_data_clear);
     #else
-    // GTK4: minimal clipboard support (text only)
-    (void)targets_list;
+    CtClipboard::_static_from_column_edit = clip_data->from_column_edit;
     auto display = Gdk::Display::get_default();
     if (display) {
         auto clipboard = display->get_clipboard();
         if (clipboard) {
-            if (!clip_data->rich_text.empty()) {
-                clipboard->set_text(clip_data->rich_text);
-            } else if (!clip_data->html_text.empty()) {
-                clipboard->set_text(clip_data->html_text);
-            } else {
+            std::vector<Glib::RefPtr<Gdk::ContentProvider>> providers;
+            Glib::ustring xml_text;
+            bool has_plain_text_provider{false};
+            bool has_html_provider{false};
+
+            for (const auto& target : targets_list) {
+                if (CtConst::TARGET_CTD_PLAIN_TEXT == target) {
+                    if (!has_plain_text_provider) {
+                        gtk4_add_text_provider(providers, clip_data->plain_text);
+                        has_plain_text_provider = true;
+                    }
+                }
+                else if (CtConst::TARGET_CTD_RICH_TEXT == target and !clip_data->rich_text.empty()) {
+                    providers.push_back(gtk4_content_provider_from_bytes(CT_MIME_RICH_TEXT, clip_data->rich_text));
+                }
+                else if (CtConst::TARGET_CTD_CODEBOX == target) {
+                    if (xml_text.empty()) {
+                        xml_text = clip_data->xml_doc.write_to_string();
+                    }
+                    if (!xml_text.empty()) {
+                        providers.push_back(gtk4_content_provider_from_bytes(CT_MIME_CODEBOX, xml_text));
+                    }
+                }
+                else if (CtConst::TARGET_CTD_TABLE == target) {
+                    if (xml_text.empty()) {
+                        xml_text = clip_data->xml_doc.write_to_string();
+                    }
+                    if (!xml_text.empty()) {
+                        providers.push_back(gtk4_content_provider_from_bytes(CT_MIME_TABLE, xml_text));
+                    }
+                }
+                else if (CtConst::TARGETS_HTML[0] == target and !clip_data->html_text.empty() and !has_html_provider) {
+                    providers.push_back(gtk4_content_provider_from_bytes(CtConst::TARGETS_HTML[0], clip_data->html_text));
+                    has_html_provider = true;
+                }
+            }
+
+            if (!providers.empty()) {
+                if (providers.size() == 1u) {
+                    clipboard->set_content(providers.front());
+                }
+                else {
+                    clipboard->set_content(Gdk::ContentProvider::create(providers));
+                }
+            }
+            else if (!clip_data->plain_text.empty()) {
                 clipboard->set_text(clip_data->plain_text);
+            }
+            else if (!clip_data->rich_text.empty()) {
+                clipboard->set_text(clip_data->rich_text);
+            }
+            else {
+                clipboard->set_text(clip_data->html_text);
             }
         }
     }
@@ -641,14 +964,62 @@ void CtClipboard::on_received_to_plain_text(const Gtk::SelectionData& selection_
 void CtClipboard::on_received_to_plain_text_gtk4(const Glib::ustring& text, Gtk::TextView* pTextView, bool force_plain_text)
 {
     if (!pTextView) return;
-    auto buffer = pTextView->get_buffer();
-    if (!buffer) return;
-    if (force_plain_text) {
-        buffer->insert_at_cursor(text);
+    Glib::ustring plain_text = str::sanitize_bad_symbols(text);
+    if (plain_text.empty()) {
+        spdlog::error("? no clipboard plain text");
         return;
     }
-    // Plain text path identical currently
-    buffer->insert_at_cursor(text);
+
+    if (CtClipboard::_static_from_column_edit) {
+        auto pCtTextView = dynamic_cast<CtTextView*>(pTextView);
+        if (pCtTextView) {
+            pCtTextView->column_edit_paste(plain_text);
+            return;
+        }
+    }
+    const bool is_rich_text = not force_plain_text and CtConst::RICH_TEXT_ID == _pCtMainWin->curr_tree_iter().get_node_syntax_highlighting();
+    if (is_rich_text and str::startswith(plain_text, "- codebox:")) {
+        _yaml_to_codebox(plain_text, pTextView);
+        return;
+    }
+
+    auto curr_buffer = pTextView->get_buffer();
+    if (!curr_buffer) return;
+    Gtk::TextIter iter_insert = curr_buffer->get_insert()->get_iter();
+    const int start_offset = iter_insert.get_offset();
+    curr_buffer->insert(iter_insert, plain_text);
+    if (is_rich_text) {
+        auto web_links_offsets = CtImports::get_web_links_offsets_from_plain_text(plain_text);
+        if (web_links_offsets.size()) {
+            for (auto& offset : web_links_offsets) {
+                Gtk::TextIter iter_sel_start = curr_buffer->get_iter_at_offset(start_offset + offset.first);
+                Gtk::TextIter iter_sel_end = curr_buffer->get_iter_at_offset(start_offset + offset.second);
+                Glib::ustring link_url = iter_sel_start.get_text(iter_sel_end);
+                if (not str::startswith_url(link_url.c_str())) {
+                    link_url = "http://" + link_url;
+                }
+                Glib::ustring property_value = "webs " + link_url;
+                curr_buffer->apply_tag_by_name(_pCtMainWin->get_text_tag_name_exist_or_create(CtConst::TAG_LINK, property_value),
+                                               iter_sel_start, iter_sel_end);
+            }
+        }
+        else if (plain_text.find(CtConst::CHAR_NEWLINE) == Glib::ustring::npos) {
+            Glib::ustring property_value;
+            if (Glib::file_test(plain_text, Glib::FILE_TEST_IS_DIR)) {
+                property_value = "fold " + Glib::Base64::encode(plain_text);
+            }
+            else if (Glib::file_test(plain_text, Glib::FILE_TEST_IS_REGULAR)) {
+                property_value = "file " + Glib::Base64::encode(plain_text);
+            }
+            if (not property_value.empty()) {
+                Gtk::TextIter iter_sel_end = curr_buffer->get_insert()->get_iter();
+                Gtk::TextIter iter_sel_start = curr_buffer->get_iter_at_offset(start_offset);
+                curr_buffer->apply_tag_by_name(_pCtMainWin->get_text_tag_name_exist_or_create(CtConst::TAG_LINK, property_value),
+                                               iter_sel_start, iter_sel_end);
+            }
+        }
+    }
+    pTextView->scroll_to(curr_buffer->get_insert());
 }
 
 void CtClipboard::on_received_to_rich_text_gtk4(const Glib::ustring& rich_text_xml, Gtk::TextView* pTextView)
@@ -657,12 +1028,55 @@ void CtClipboard::on_received_to_rich_text_gtk4(const Glib::ustring& rich_text_x
     auto buffer = pTextView->get_buffer();
     if (!buffer) return;
     from_xml_string_to_buffer(buffer, rich_text_xml, nullptr);
+    pTextView->scroll_to(buffer->get_insert());
+}
+
+void CtClipboard::on_received_to_codebox_gtk4(const Glib::ustring& xml_text, Gtk::TextView* pTextView)
+{
+    if (xml_text.empty()) {
+        spdlog::error("? no clipboard xml text");
+        return;
+    }
+    _xml_to_codebox(xml_text, pTextView);
+}
+
+void CtClipboard::on_received_to_table_gtk4(const Glib::ustring& xml_text,
+                                            Gtk::TextView* pTextView,
+                                            const bool is_column,
+                                            CtTableCommon* parentTable)
+{
+    if (xml_text.empty()) {
+        spdlog::error("? no clipboard xml text");
+        return;
+    }
+    _xml_to_table(xml_text, pTextView, is_column, parentTable);
+}
+
+void CtClipboard::on_received_to_html_gtk4(const Glib::ustring& html_content, Gtk::TextView* pTextView)
+{
+    _html_to_rich_text(html_content, pTextView);
+}
+
+void CtClipboard::on_received_to_image_gtk4(const Glib::RefPtr<Gdk::Texture>& texture, Gtk::TextView* pTextView)
+{
+    if (!pTextView) {
+        return;
+    }
+    auto pixbuf = gtk4_texture_to_pixbuf(texture);
+    if (pixbuf) {
+        Glib::ustring link;
+        _pCtMainWin->get_ct_actions()->image_insert_png(pTextView->get_buffer()->get_insert()->get_iter(), pixbuf, link, "");
+        pTextView->scroll_to(pTextView->get_buffer()->get_insert());
+    }
+    else {
+        spdlog::debug("invalid GTK4 image in clipboard");
+    }
 }
 
 void CtClipboard::on_received_to_uri_list_gtk4(const Glib::ustring& uri_list, Gtk::TextView* pTextView, const bool forcePlain, const bool /*fromDragNDrop*/)
 {
     if (!pTextView) return;
-    std::vector<std::string> uris;
+    std::vector<Glib::ustring> uris;
     std::istringstream iss(uri_list);
     std::string line;
     while (std::getline(iss, line)) {
@@ -670,15 +1084,24 @@ void CtClipboard::on_received_to_uri_list_gtk4(const Glib::ustring& uri_list, Gt
         if (!line.empty()) uris.push_back(line);
     }
     if (uris.empty()) return;
-    for (const auto& u : uris) {
-        // Reuse existing logic: insert as link or plain text
-        if (forcePlain) {
-            pTextView->get_buffer()->insert_at_cursor(u + "\n");
-        } else {
-            // Basic insertion; richer handling can be added later
-            pTextView->get_buffer()->insert_at_cursor(u + "\n");
+
+    std::string syntax_highlighting;
+    if (auto pCtTextView = dynamic_cast<CtTextView*>(pTextView)) {
+        syntax_highlighting = pCtTextView->get_syntax_highlighting();
+    }
+    else {
+        syntax_highlighting = _pCtMainWin->curr_tree_iter().get_node_syntax_highlighting();
+    }
+    Glib::RefPtr<Gtk::TextBuffer> pTextBuffer = pTextView->get_buffer();
+    if (forcePlain or syntax_highlighting != CtConst::RICH_TEXT_ID) {
+        for (const Glib::ustring& uri : uris) {
+            pTextBuffer->insert(pTextBuffer->get_insert()->get_iter(), uri + CtConst::CHAR_NEWLINE);
         }
     }
+    else {
+        _uri_or_filepath_list_into_rich_text(uris, pTextView);
+    }
+    pTextView->scroll_to(pTextBuffer->get_insert());
 }
 #endif
 
@@ -735,6 +1158,19 @@ void CtClipboard::on_received_to_table(const Gtk::SelectionData& selection_data,
 #endif
     if (xml_text.empty()) {
         spdlog::error("? no clipboard xml text");
+        return;
+    }
+
+    _xml_to_table(xml_text, pTextView, is_column, parentTable);
+}
+#endif
+
+void CtClipboard::_xml_to_table(const Glib::ustring& xml_text,
+                                Gtk::TextView* pTextView,
+                                const bool is_column,
+                                CtTableCommon* parentTable)
+{
+    if (!parentTable and !pTextView) {
         return;
     }
 
@@ -814,7 +1250,6 @@ void CtClipboard::on_received_to_table(const Gtk::SelectionData& selection_data,
         pTextView->scroll_to(pTextView->get_buffer()->get_insert());
     }
 }
-#endif
 
 // From Clipboard to HTML Text
 #if GTKMM_MAJOR_VERSION < 4 && !defined(GTKMM_DISABLE_DEPRECATED)
@@ -829,15 +1264,27 @@ void CtClipboard::on_received_to_html(const Gtk::SelectionData& selection_data, 
         CtStrUtil::convert_if_not_utf8(html_content, false/*sanitise*/);
 #endif
     }
-    html_content = str::sanitize_bad_symbols(html_content);
 
+    _html_to_rich_text(html_content, pTextView);
+}
+#endif
+
+void CtClipboard::_html_to_rich_text(const Glib::ustring& html_content, Gtk::TextView* pTextView)
+{
+    if (!pTextView) {
+        return;
+    }
+    const Glib::ustring sanitized_html = str::sanitize_bad_symbols(html_content);
+    if (sanitized_html.empty()) {
+        spdlog::error("? no clipboard html text");
+        return;
+    }
     CtHtml2Xml parser{_pCtMainWin->get_ct_config()};
-    parser.feed(html_content);
+    parser.feed(sanitized_html);
     bool pasteHadWidgets{false};
     from_xml_string_to_buffer(pTextView->get_buffer(), parser.to_string(), &pasteHadWidgets);
     pTextView->scroll_to(pTextView->get_buffer()->get_insert());
 }
-#endif
 
 // From Clipboard to Image
 #if GTKMM_MAJOR_VERSION < 4 && !defined(GTKMM_DISABLE_DEPRECATED)

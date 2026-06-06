@@ -83,12 +83,15 @@ CtDialogs::CtStartDialogAction CtDialogs::start_dialog(CtMainWin* pCtMainWin,
     constexpr int RESPONSE_OPEN_FOLDER = 3;
     constexpr int RESPONSE_OPEN_RECENT = 4;
 
+#if GTKMM_MAJOR_VERSION >= 4
+    dialog.add_button(_("New Document"), RESPONSE_NEW_DOC);
+    dialog.add_button(_("Open File"), RESPONSE_OPEN_FILE);
+    dialog.add_button(_("Open Folder"), RESPONSE_OPEN_FOLDER);
+    dialog.add_button(_("Cancel"), Gtk::ResponseType::CANCEL);
+#else
     Gtk::Button* btn_new_doc = dialog.add_button(_("New Document"), RESPONSE_NEW_DOC);
     Gtk::Button* btn_open_file = dialog.add_button(_("Open File"), RESPONSE_OPEN_FILE);
     Gtk::Button* btn_open_folder = dialog.add_button(_("Open Folder"), RESPONSE_OPEN_FOLDER);
-#if GTKMM_MAJOR_VERSION >= 4
-    dialog.add_button(_("Cancel"), Gtk::ResponseType::CANCEL);
-#else
     Gtk::Button* btn_cancel = dialog.add_button(Gtk::Stock::CANCEL, Gtk::RESPONSE_CANCEL);
 
     btn_new_doc->set_image(*pCtMainWin->new_managed_image_from_stock("ct_new-instance", Gtk::ICON_SIZE_BUTTON));
@@ -162,8 +165,10 @@ CtDialogs::CtStartDialogAction CtDialogs::start_dialog(CtMainWin* pCtMainWin,
     #endif
 
         open_recent_button = dialog.add_button(_("Open Selected"), RESPONSE_OPEN_RECENT);
+#if GTKMM_MAJOR_VERSION < 4
         open_recent_button->set_image(*pCtMainWin->new_managed_image_from_stock("ct_open", Gtk::ICON_SIZE_BUTTON));
         open_recent_button->set_always_show_image(true);
+#endif
         if (open_recent_button) {
             open_recent_button->set_sensitive(false);
         }
@@ -565,8 +570,166 @@ void CtDialogs::bookmarks_handle_dialog(CtMainWin* pCtMainWin)
 bool CtDialogs::choose_data_storage_dialog(CtMainWin* pCtMainWin, CtStorageSelectArgs& args)
 {
 #if GTK_MAJOR_VERSION >= 4
-    (void)pCtMainWin; (void)args;
-    return false;
+    Gtk::Dialog dialog{_("Choose Storage Type"), *pCtMainWin, true/*modal*/, true/*use_header_bar*/};
+    dialog.add_button(_("Cancel"), Gtk::ResponseType::REJECT);
+    dialog.add_button(_("OK"), Gtk::ResponseType::ACCEPT);
+    dialog.set_default_response(Gtk::ResponseType::ACCEPT);
+    dialog.set_default_size(350, -1);
+
+    Gtk::CheckButton radiobutton_sqlite_not_protected{Glib::ustring{_("Single SQLite File")} + " (.ctb)"};
+    Gtk::CheckButton radiobutton_sqlite_pass_protected{Glib::ustring{_("Single SQLite File, 7-zip Encrypted and Password Protected")} + " (.ctx)"};
+    Gtk::CheckButton radiobutton_xml_not_protected{Glib::ustring{_("Single XML File")} + " (.ctd)"};
+    Gtk::CheckButton radiobutton_xml_pass_protected{Glib::ustring{_("Single XML File, 7-zip Encrypted and Password Protected")} + " (.ctz)"};
+    Gtk::CheckButton radiobutton_multifile{_("Multiple Files in Hierarchical Folder Structure")};
+    radiobutton_sqlite_pass_protected.set_group(radiobutton_sqlite_not_protected);
+    radiobutton_xml_not_protected.set_group(radiobutton_sqlite_not_protected);
+    radiobutton_xml_pass_protected.set_group(radiobutton_sqlite_not_protected);
+    radiobutton_multifile.set_group(radiobutton_sqlite_not_protected);
+
+    Gtk::Grid grid_type;
+    grid_type.set_row_spacing(2);
+    grid_type.set_column_spacing(4);
+    grid_type.set_row_homogeneous(true);
+
+    auto* image_sqlite_not_protected = pCtMainWin->new_managed_image_from_stock("ct_db", Gtk::ICON_SIZE_MENU);
+    auto* image_sqlite_pass_protected = pCtMainWin->new_managed_image_from_stock("ct_7zip", Gtk::ICON_SIZE_MENU);
+    auto* image_xml_not_protected = pCtMainWin->new_managed_image_from_stock("ct_xml", Gtk::ICON_SIZE_MENU);
+    auto* image_xml_pass_protected = pCtMainWin->new_managed_image_from_stock("ct_7zip", Gtk::ICON_SIZE_MENU);
+    auto* image_multifile = pCtMainWin->new_managed_image_from_stock("ct_directory", Gtk::ICON_SIZE_MENU);
+
+    grid_type.attach(*image_sqlite_not_protected,       0, 0, 1, 1);
+    grid_type.attach(*image_sqlite_pass_protected,      0, 1, 1, 1);
+    grid_type.attach(*image_xml_not_protected,          0, 2, 1, 1);
+    grid_type.attach(*image_xml_pass_protected,         0, 3, 1, 1);
+    grid_type.attach(*image_multifile,                  0, 4, 1, 1);
+
+    grid_type.attach(radiobutton_sqlite_not_protected,  1, 0, 1, 1);
+    grid_type.attach(radiobutton_sqlite_pass_protected, 1, 1, 1, 1);
+    grid_type.attach(radiobutton_xml_not_protected,     1, 2, 1, 1);
+    grid_type.attach(radiobutton_xml_pass_protected,    1, 3, 1, 1);
+    grid_type.attach(radiobutton_multifile,             1, 4, 1, 1);
+
+    Gtk::Frame type_frame{Glib::ustring{"<b>"} + _("Storage Type") + "</b>"};
+    dynamic_cast<Gtk::Label*>(type_frame.get_label_widget())->set_use_markup(true);
+    type_frame.set_child(grid_type);
+
+    Gtk::Entry entry_passw_1;
+    entry_passw_1.set_visibility(false);
+    Gtk::Entry entry_passw_2;
+    entry_passw_2.set_visibility(false);
+    Gtk::Label label_passwd{_("CT saves the document in an encrypted 7zip archive. When viewing or editing the document, CT extracts the encrypted archive to a temporary folder, and works on the unencrypted copy. When closing, the unencrypted copy is deleted from the temporary directory. Note that in the case of application or system crash, the unencrypted document will remain in the temporary folder.")};
+    label_passwd.set_width_chars(70);
+    label_passwd.set_wrap(true);
+    Gtk::Box vbox_passw{Gtk::Orientation::VERTICAL};
+    vbox_passw.append(entry_passw_1);
+    vbox_passw.append(entry_passw_2);
+    vbox_passw.append(label_passwd);
+
+    Gtk::Frame passw_frame{Glib::ustring{"<b>"} + _("Enter the New Password Twice") + "</b>"};
+    dynamic_cast<Gtk::Label*>(passw_frame.get_label_widget())->set_use_markup(true);
+    passw_frame.set_child(vbox_passw);
+
+    if (args.ctDocEncrypt == CtDocEncrypt::False) {
+        passw_frame.set_sensitive(false);
+        if (args.ctDocType == CtDocType::SQLite) {
+            radiobutton_sqlite_not_protected.set_active(true);
+        }
+        else if (args.ctDocType == CtDocType::XML) {
+            radiobutton_xml_not_protected.set_active(true);
+        }
+        else if (args.ctDocType == CtDocType::MultiFile) {
+            radiobutton_multifile.set_active(true);
+        }
+    }
+    else if (args.ctDocEncrypt == CtDocEncrypt::True) {
+        passw_frame.set_sensitive(true);
+        if (args.ctDocType == CtDocType::SQLite) {
+            radiobutton_sqlite_pass_protected.set_active(true);
+        }
+        else {
+            radiobutton_xml_pass_protected.set_active(true);
+        }
+    }
+    else {
+        radiobutton_sqlite_not_protected.set_active(true);
+        passw_frame.set_sensitive(false);
+    }
+
+    auto pCtConfig = pCtMainWin->get_ct_config();
+    Gtk::Box hbox_autosave{Gtk::Orientation::HORIZONTAL, 4};
+    Gtk::CheckButton checkbutton_autosave{_("Autosave Every")};
+    Glib::RefPtr<Gtk::Adjustment> adjustment_autosave = Gtk::Adjustment::create(pCtConfig->autosaveMinutes, 1, 1000, 1);
+    Gtk::SpinButton spinbutton_autosave{adjustment_autosave};
+    Gtk::Label label_autosave{_("Minutes")};
+    checkbutton_autosave.set_active(pCtConfig->autosaveOn);
+    spinbutton_autosave.set_value(pCtConfig->autosaveMinutes);
+    spinbutton_autosave.set_sensitive(pCtConfig->autosaveOn);
+    hbox_autosave.append(checkbutton_autosave);
+    hbox_autosave.append(spinbutton_autosave);
+    hbox_autosave.append(label_autosave);
+
+    checkbutton_autosave.signal_toggled().connect([pCtConfig, pCtMainWin, &checkbutton_autosave, &spinbutton_autosave]() {
+        pCtConfig->autosaveOn = checkbutton_autosave.get_active();
+        pCtMainWin->file_autosave_restart();
+        spinbutton_autosave.set_sensitive(pCtConfig->autosaveOn);
+    });
+    spinbutton_autosave.signal_value_changed().connect([pCtConfig, pCtMainWin, &spinbutton_autosave]() {
+        pCtConfig->autosaveMinutes = spinbutton_autosave.get_value_as_int();
+        pCtMainWin->file_autosave_restart();
+    });
+
+    Gtk::Box* pContentArea = dialog.get_content_area();
+    pContentArea->set_spacing(5);
+    CtMiscUtil::set_widget_margins(*pContentArea, 5, 5, 5, 5);
+    pContentArea->append(type_frame);
+    pContentArea->append(passw_frame);
+    if (args.showAutosaveOptions) {
+        pContentArea->append(hbox_autosave);
+    }
+
+    auto on_radiobutton_savetype_toggled = [&]() {
+        if (radiobutton_sqlite_pass_protected.get_active() or radiobutton_xml_pass_protected.get_active()) {
+            passw_frame.set_sensitive(true);
+            entry_passw_1.grab_focus();
+        }
+        else {
+            passw_frame.set_sensitive(false);
+        }
+    };
+    radiobutton_sqlite_not_protected.signal_toggled().connect(on_radiobutton_savetype_toggled);
+    radiobutton_sqlite_pass_protected.signal_toggled().connect(on_radiobutton_savetype_toggled);
+    radiobutton_xml_not_protected.signal_toggled().connect(on_radiobutton_savetype_toggled);
+    radiobutton_xml_pass_protected.signal_toggled().connect(on_radiobutton_savetype_toggled);
+    radiobutton_multifile.signal_toggled().connect(on_radiobutton_savetype_toggled);
+    entry_passw_1.signal_activate().connect([&dialog]() { dialog.response(Gtk::ResponseType::ACCEPT); });
+    entry_passw_2.signal_activate().connect([&dialog]() { dialog.response(Gtk::ResponseType::ACCEPT); });
+
+    bool retVal{Gtk::ResponseType::ACCEPT == _run_dialog_blocking(dialog)};
+    if (retVal) {
+        if (radiobutton_multifile.get_active()) {
+            args.ctDocType = CtDocType::MultiFile;
+        }
+        else if (radiobutton_xml_not_protected.get_active() or radiobutton_xml_pass_protected.get_active()) {
+            args.ctDocType = CtDocType::XML;
+        }
+        else {
+            args.ctDocType = CtDocType::SQLite;
+        }
+        args.ctDocEncrypt = radiobutton_sqlite_pass_protected.get_active() or radiobutton_xml_pass_protected.get_active() ?
+                            CtDocEncrypt::True : CtDocEncrypt::False;
+        if (CtDocEncrypt::True == args.ctDocEncrypt) {
+            args.password = entry_passw_1.get_text();
+            if (args.password.empty()) {
+                error_dialog(_("The Password Fields Must be Filled."), *pCtMainWin);
+                retVal = false;
+            }
+            else if (args.password != entry_passw_2.get_text()) {
+                error_dialog(_("The Two Inserted Passwords Do Not Match."), *pCtMainWin);
+                retVal = false;
+            }
+        }
+    }
+    return retVal;
 #else
     Gtk::Dialog dialog{_("Choose Storage Type"),
                        *pCtMainWin,
@@ -756,7 +919,29 @@ bool CtDialogs::choose_data_storage_dialog(CtMainWin* pCtMainWin, CtStorageSelec
 CtYesNoCancel CtDialogs::exit_save_dialog(CtMainWin& ct_main_win)
 {
 #if GTK_MAJOR_VERSION >= 4
-    (void)ct_main_win;
+    Gtk::Dialog dialog{_("Warning"), ct_main_win, true/*modal*/, true/*use_header_bar*/};
+    dialog.add_button(_("Discard"), Gtk::ResponseType::NO);
+    dialog.add_button(_("Cancel"), Gtk::ResponseType::CANCEL);
+    dialog.add_button(_("Save"), Gtk::ResponseType::YES);
+    dialog.set_default_response(Gtk::ResponseType::YES);
+    dialog.set_default_size(350, 150);
+
+    Gtk::Image image;
+    image.set_from_icon_name("ct_warning");
+    Gtk::Label label{Glib::ustring{"<b>"} + _("The Current Document was Updated.") + "</b>\n\n<b>" + _("Do you want to Save the Changes?") + "</b>"};
+    label.set_use_markup(true);
+    Gtk::Box hbox{Gtk::Orientation::HORIZONTAL, 5};
+    hbox.append(image);
+    hbox.append(label);
+    dialog.get_content_area()->append(hbox);
+
+    const int response = _run_dialog_blocking(dialog);
+    if (Gtk::ResponseType::YES == response) {
+        return CtYesNoCancel::Yes;
+    }
+    if (Gtk::ResponseType::NO == response) {
+        return CtYesNoCancel::No;
+    }
     return CtYesNoCancel::Cancel;
 #else
     Gtk::Dialog dialog = Gtk::Dialog(_("Warning"),
@@ -810,8 +995,54 @@ bool CtDialogs::exec_code_confirm_dialog(CtMainWin& ct_main_win,
                                          const Glib::ustring& code_txt)
 {
 #if GTK_MAJOR_VERSION >= 4
-    (void)ct_main_win; (void)syntax_highl; (void)code_txt;
-    return false;
+    Gtk::Dialog dialog{_("Warning"), ct_main_win, true/*modal*/, true/*use_header_bar*/};
+    dialog.add_button(_("Cancel"), Gtk::ResponseType::CANCEL);
+    dialog.add_button(_("Execute"), Gtk::ResponseType::YES);
+    dialog.set_default_response(Gtk::ResponseType::YES);
+    dialog.set_default_size(350, 150);
+
+    Gtk::Image image;
+    image.set_from_icon_name(ct_main_win.get_code_icon_name(syntax_highl));
+    image.set_tooltip_text(syntax_highl);
+    Gtk::Label label{Glib::ustring{"<b>"} + _("Do you want to Execute the Code?") + "</b>"};
+    label.set_use_markup(true);
+    Gtk::Box hbox{Gtk::Orientation::HORIZONTAL, 5};
+    hbox.append(image);
+    hbox.append(label);
+
+    const Glib::ustring code_preview_text = code_txt.size() < 200 ? code_txt : code_txt.substr(0, 200) + " ...";
+    Gtk::Label code_preview;
+    code_preview.set_markup(Glib::ustring{"<tt>"} + Glib::Markup::escape_text(code_preview_text) + "</tt>");
+    code_preview.set_wrap(true);
+    code_preview.set_selectable(true);
+
+    Gtk::CheckButton checkbutton_code_exec_confirm{_("Ask Confirmation Before Executing the Code")};
+    checkbutton_code_exec_confirm.set_active(ct_main_win.get_ct_config()->codeExecConfirm);
+    checkbutton_code_exec_confirm.set_can_focus(false);
+#if defined(HAVE_VTE)
+    Gtk::CheckButton checkbutton_code_exec_vte{_("Use Internal Terminal")};
+    checkbutton_code_exec_vte.set_active(ct_main_win.get_ct_config()->codeExecVte);
+    checkbutton_code_exec_vte.set_can_focus(false);
+#endif // HAVE_VTE
+
+    Gtk::Box* pContentArea = dialog.get_content_area();
+    pContentArea->append(hbox);
+    pContentArea->append(code_preview);
+    pContentArea->append(checkbutton_code_exec_confirm);
+#if defined(HAVE_VTE)
+    pContentArea->append(checkbutton_code_exec_vte);
+#endif // HAVE_VTE
+
+    checkbutton_code_exec_confirm.signal_toggled().connect([&]() {
+        ct_main_win.get_ct_config()->codeExecConfirm = checkbutton_code_exec_confirm.get_active();
+    });
+#if defined(HAVE_VTE)
+    checkbutton_code_exec_vte.signal_toggled().connect([&]() {
+        ct_main_win.get_ct_config()->codeExecVte = checkbutton_code_exec_vte.get_active();
+    });
+#endif // HAVE_VTE
+
+    return Gtk::ResponseType::YES == _run_dialog_blocking(dialog);
 #else
     Gtk::Dialog dialog = Gtk::Dialog(_("Warning"),
                                      ct_main_win,
@@ -1064,8 +1295,39 @@ MA 02110-1301, USA.
 void CtDialogs::summary_info_dialog(CtMainWin* pCtMainWin, const CtSummaryInfo& summaryInfo)
 {
 #if GTK_MAJOR_VERSION >= 4
-    (void)pCtMainWin; (void)summaryInfo;
-    return;
+    Gtk::Dialog dialog{_("Tree Summary Information"), *pCtMainWin, true/*modal*/, true/*use_header_bar*/};
+    dialog.add_button(_("OK"), Gtk::ResponseType::ACCEPT);
+    dialog.set_default_response(Gtk::ResponseType::ACCEPT);
+    dialog.set_default_size(400, 300);
+
+    Gtk::Grid grid;
+    CtMiscUtil::set_widget_margins(grid, 6, 6, 6, 6);
+    grid.set_row_spacing(4);
+    grid.set_column_spacing(8);
+    grid.set_row_homogeneous(true);
+
+    auto attach_summary_row = [&grid](int row, const Glib::ustring& key, const Glib::ustring& value) {
+        auto* label_key = Gtk::manage(new Gtk::Label{Glib::ustring{"<b>"} + key + "</b>"});
+        label_key->set_use_markup(true);
+        label_key->set_halign(Gtk::Align::START);
+        auto* label_val = Gtk::manage(new Gtk::Label{value});
+        label_val->set_halign(Gtk::Align::START);
+        grid.attach(*label_key, 0, row, 1, 1);
+        grid.attach(*label_val, 1, row, 1, 1);
+    };
+    attach_summary_row(0, _("Number of Rich Text Nodes"), std::to_string(summaryInfo.nodes_rich_text_num));
+    attach_summary_row(1, _("Number of Plain Text Nodes"), std::to_string(summaryInfo.nodes_plain_text_num));
+    attach_summary_row(2, _("Number of Code Nodes"), std::to_string(summaryInfo.nodes_code_num));
+    attach_summary_row(3, _("Number of Images"), std::to_string(summaryInfo.images_num));
+    attach_summary_row(4, _("Number of LatexBoxes"), std::to_string(summaryInfo.latexes_num));
+    attach_summary_row(5, _("Number of Embedded Files"), std::to_string(summaryInfo.embfile_num));
+    attach_summary_row(6, _("Number of Tables"), fmt::format("{} + {}", summaryInfo.heavytables_num, summaryInfo.lighttables_num));
+    attach_summary_row(7, _("Number of CodeBoxes"), std::to_string(summaryInfo.codeboxes_num));
+    attach_summary_row(8, _("Number of Anchors"), std::to_string(summaryInfo.anchors_num));
+    attach_summary_row(9, _("Number of Shared Nodes / Groups"), fmt::format("{} / {}", summaryInfo.nodes_shared_tot, summaryInfo.nodes_shared_groups));
+
+    dialog.get_content_area()->append(grid);
+    (void)_run_dialog_blocking(dialog);
 #else
     Gtk::Dialog dialog = Gtk::Dialog{_("Tree Summary Information"),
                                      *pCtMainWin,

@@ -29,6 +29,228 @@
 #include "ct_logging.h"
 
 #if GTKMM_MAJOR_VERSION >= 4
+namespace {
+xmlpp::Attribute* ct_menu_get_xml_attribute4(xmlpp::Node* pNode, char const* name)
+{
+    auto* pElement = dynamic_cast<xmlpp::Element*>(pNode);
+    return pElement ? pElement->get_attribute(name) : nullptr;
+}
+
+Gtk::Box* ct_popup_new_box4()
+{
+    auto* box = Gtk::manage(new Gtk::Box{Gtk::Orientation::VERTICAL, 0});
+    box->set_margin_top(6);
+    box->set_margin_bottom(6);
+    box->set_margin_start(6);
+    box->set_margin_end(6);
+    return box;
+}
+
+std::string ct_popup_shortcut_display4(std::string shortcut)
+{
+    if (shortcut.empty()) {
+        return {};
+    }
+    shortcut = str::replace(shortcut, "<control>", "Ctrl+");
+    shortcut = str::replace(shortcut, "<shift>", "Shift+");
+    shortcut = str::replace(shortcut, "<alt>", "Alt+");
+    shortcut = str::replace(shortcut, "<meta>", "Meta+");
+    return shortcut;
+}
+
+Gtk::Button* ct_popup_new_action_button4(CtMenuAction* pAction,
+                                         CtConfig* pConfig,
+                                         Gtk::Popover* rootPopover)
+{
+    auto* button = Gtk::manage(new Gtk::Button{});
+    button->set_has_frame(false);
+    button->set_halign(Gtk::Align::FILL);
+    button->set_hexpand(true);
+    button->get_style_context()->add_class("flat");
+
+    auto* row = Gtk::manage(new Gtk::Box{Gtk::Orientation::HORIZONTAL, 24});
+    row->set_hexpand(true);
+
+    auto* label = Gtk::manage(new Gtk::Label{pAction->name});
+    label->set_use_underline(true);
+    label->set_xalign(0.0f);
+    label->set_hexpand(true);
+    row->append(*label);
+
+    const std::string shortcut = ct_popup_shortcut_display4(pAction->get_shortcut(pConfig));
+    if (not shortcut.empty()) {
+        auto* accel = Gtk::manage(new Gtk::Label{shortcut});
+        accel->set_xalign(1.0f);
+        accel->get_style_context()->add_class("dim-label");
+        row->append(*accel);
+    }
+
+    button->set_child(*row);
+    button->signal_clicked().connect([rootPopover, pAction]() {
+        rootPopover->popdown();
+        if (pAction->run_action) {
+            Glib::signal_idle().connect_once([pAction]() {
+                if (pAction->run_action) {
+                    pAction->run_action();
+                }
+            });
+        }
+    });
+    return button;
+}
+
+void ct_popup_append_action4(Gtk::Box& box,
+                             CtMenu* pMenu,
+                             CtConfig* pConfig,
+                             Gtk::Popover* rootPopover,
+                             const char* actionId)
+{
+    if (CtMenuAction* pAction = pMenu->find_action(actionId)) {
+        box.append(*ct_popup_new_action_button4(pAction, pConfig, rootPopover));
+    }
+}
+
+void ct_popup_append_separator4(Gtk::Box& box)
+{
+    auto* separator = Gtk::manage(new Gtk::Separator{Gtk::Orientation::HORIZONTAL});
+    separator->set_margin_top(4);
+    separator->set_margin_bottom(4);
+    box.append(*separator);
+}
+
+void ct_popup_walk_xml_siblings4(Gtk::Box& box,
+                                 CtMenu* pMenu,
+                                 CtConfig* pConfig,
+                                 Gtk::Popover* rootPopover,
+                                 xmlpp::Node* pNode);
+
+void ct_popup_walk_xml_one4(Gtk::Box& box,
+                            CtMenu* pMenu,
+                            CtConfig* pConfig,
+                            Gtk::Popover* rootPopover,
+                            xmlpp::Node* pNode)
+{
+    if (not pNode) {
+        return;
+    }
+
+    const auto node_name = pNode->get_name();
+    if (node_name == "menubar" or node_name == "popup") {
+        ct_popup_walk_xml_siblings4(box, pMenu, pConfig, rootPopover, pNode->get_first_child());
+        return;
+    }
+    if (node_name == "menu") {
+        Glib::ustring label_text;
+        if (auto* pAttrName = ct_menu_get_xml_attribute4(pNode, "_name")) {
+            label_text = _(pAttrName->get_value().c_str());
+        }
+        else if (auto* pAttrAction = ct_menu_get_xml_attribute4(pNode, "action")) {
+            if (CtMenuAction const* pAction = pMenu->find_action(pAttrAction->get_value())) {
+                label_text = pAction->name;
+            }
+            else {
+                label_text = pAttrAction->get_value();
+            }
+        }
+        if (label_text.empty()) {
+            return;
+        }
+
+        auto* menuButton = Gtk::manage(new Gtk::MenuButton{});
+        menuButton->set_has_frame(false);
+        menuButton->set_halign(Gtk::Align::FILL);
+        menuButton->set_hexpand(true);
+        menuButton->get_style_context()->add_class("flat");
+
+        auto* row = Gtk::manage(new Gtk::Box{Gtk::Orientation::HORIZONTAL, 24});
+        auto* label = Gtk::manage(new Gtk::Label{label_text});
+        label->set_use_underline(true);
+        label->set_xalign(0.0f);
+        label->set_hexpand(true);
+        auto* arrow = Gtk::manage(new Gtk::Label{">"});
+        arrow->get_style_context()->add_class("dim-label");
+        row->append(*label);
+        row->append(*arrow);
+        menuButton->set_child(*row);
+
+        auto* subPopover = Gtk::manage(new Gtk::Popover{});
+        auto* subBox = ct_popup_new_box4();
+        ct_popup_walk_xml_siblings4(*subBox, pMenu, pConfig, rootPopover, pNode->get_first_child());
+        subPopover->set_child(*subBox);
+        menuButton->set_popover(*subPopover);
+        box.append(*menuButton);
+        return;
+    }
+    if (node_name == "menuitem") {
+        if (auto* pAttrAction = ct_menu_get_xml_attribute4(pNode, "action")) {
+            ct_popup_append_action4(box, pMenu, pConfig, rootPopover, pAttrAction->get_value().c_str());
+        }
+        return;
+    }
+    if (node_name == "separator") {
+        ct_popup_append_separator4(box);
+    }
+}
+
+void ct_popup_walk_xml_siblings4(Gtk::Box& box,
+                                 CtMenu* pMenu,
+                                 CtConfig* pConfig,
+                                 Gtk::Popover* rootPopover,
+                                 xmlpp::Node* pNode)
+{
+    for (xmlpp::Node* pNodeIter = pNode; pNodeIter; pNodeIter = pNodeIter->get_next_sibling()) {
+        ct_popup_walk_xml_one4(box, pMenu, pConfig, rootPopover, pNodeIter);
+    }
+}
+
+Gtk::Box* ct_popup_build_box_from_xml4(CtMenu* pMenu,
+                                       CtConfig* pConfig,
+                                       Gtk::Popover* rootPopover,
+                                       const char* document,
+                                       const char* xpath)
+{
+    auto* box = ct_popup_new_box4();
+
+    xmlpp::DomParser parser;
+    if (not CtXmlHelper::safe_parse_memory(parser, document)) {
+        return box;
+    }
+    xmlpp::Node* pRoot = parser.get_document() ? parser.get_document()->get_root_node() : nullptr;
+    if (not pRoot) {
+        return box;
+    }
+
+    if (xpath) {
+        const auto nodes = pRoot->find(xpath);
+        for (xmlpp::Node* pNode : nodes) {
+            ct_popup_walk_xml_one4(*box, pMenu, pConfig, rootPopover, pNode);
+        }
+    }
+    else {
+        ct_popup_walk_xml_one4(*box, pMenu, pConfig, rootPopover, pRoot);
+    }
+
+    return box;
+}
+
+Gtk::Popover* ct_popup_new_root_popover4(Gtk::Widget& parent, double x, double y)
+{
+    auto* popover = Gtk::manage(new Gtk::Popover{});
+    popover->set_autohide(true);
+    popover->set_has_arrow(false);
+    popover->set_parent(parent);
+    popover->set_pointing_to(Gdk::Rectangle{static_cast<int>(x), static_cast<int>(y), 1, 1});
+    popover->signal_closed().connect([popover]() {
+        if (popover->get_parent()) {
+            popover->unparent();
+        }
+    });
+    return popover;
+}
+}
+#endif /* GTKMM_MAJOR_VERSION >= 4 */
+
+#if GTKMM_MAJOR_VERSION >= 4
 std::vector<Gtk::Box*> CtMenu::build_toolbars4(Gtk::MenuButton*& pRecentDocsMenuButton, Gtk::Button*& pButtonSave)
 {
     pRecentDocsMenuButton = nullptr;
@@ -353,6 +575,380 @@ void CtMenu::update_recent_docs_gio_menu4(const CtRecentDocsFilepaths& recentDoc
             ++idx;
         }
     }
+}
+
+Glib::RefPtr<Gio::Menu> CtMenu::_build_popup_menu_model_from_xml4(const char* document, const char* xpath)
+{
+    auto top_menu = Gio::Menu::create();
+
+    xmlpp::DomParser parser;
+    if (not CtXmlHelper::safe_parse_memory(parser, document)) {
+        return top_menu;
+    }
+
+    struct MenuFrame {
+        Glib::RefPtr<Gio::Menu> menu;
+        Glib::RefPtr<Gio::Menu> section;
+    };
+
+    auto ensure_section = [](MenuFrame& frame) {
+        if (not frame.section) {
+            frame.section = Gio::Menu::create();
+            frame.menu->append_section({}, frame.section);
+        }
+        return frame.section;
+    };
+
+    std::function<void(MenuFrame&, xmlpp::Node*)> walk_one;
+    std::function<void(MenuFrame&, xmlpp::Node*)> walk_siblings;
+
+    walk_siblings = [&](MenuFrame& frame, xmlpp::Node* pNode) {
+        for (xmlpp::Node* pNodeIter = pNode; pNodeIter; pNodeIter = pNodeIter->get_next_sibling()) {
+            walk_one(frame, pNodeIter);
+        }
+    };
+
+    walk_one = [&](MenuFrame& frame, xmlpp::Node* pNode) {
+        if (not pNode) {
+            return;
+        }
+
+        const auto node_name = pNode->get_name();
+        if (node_name == "menubar" or node_name == "popup") {
+            walk_siblings(frame, pNode->get_first_child());
+            return;
+        }
+        if (node_name == "menu") {
+            Glib::ustring label;
+            if (auto* pAttrName = ct_menu_get_xml_attribute4(pNode, "_name")) {
+                label = _(pAttrName->get_value().c_str());
+            }
+            else if (auto* pAttrAction = ct_menu_get_xml_attribute4(pNode, "action")) {
+                if (CtMenuAction const* pAction = find_action(pAttrAction->get_value())) {
+                    label = pAction->name;
+                }
+                else {
+                    label = pAttrAction->get_value();
+                }
+            }
+            if (label.empty()) {
+                return;
+            }
+
+            auto submenu = Gio::Menu::create();
+            ensure_section(frame)->append_submenu(label, submenu);
+            MenuFrame sub_frame{submenu, {}};
+            walk_siblings(sub_frame, pNode->get_first_child());
+            return;
+        }
+        if (node_name == "menuitem") {
+            auto* pAttrAction = ct_menu_get_xml_attribute4(pNode, "action");
+            CtMenuAction* pAction = pAttrAction ? find_action(pAttrAction->get_value()) : nullptr;
+            if (pAction) {
+                ensure_section(frame)->append(pAction->name, std::string("win.") + pAction->id);
+            }
+            return;
+        }
+        if (node_name == "separator") {
+            frame.section.reset();
+        }
+    };
+
+    MenuFrame frame{top_menu, {}};
+    xmlpp::Node* pRoot = parser.get_document() ? parser.get_document()->get_root_node() : nullptr;
+    if (not pRoot) {
+        return top_menu;
+    }
+    if (xpath) {
+        const auto nodes = pRoot->find(xpath);
+        for (xmlpp::Node* pNode : nodes) {
+            walk_one(frame, pNode);
+        }
+    }
+    else {
+        walk_one(frame, pRoot);
+    }
+
+    return top_menu;
+}
+
+Glib::RefPtr<Gio::Menu> CtMenu::build_popup_menu_model4(POPUP_MENU_TYPE popupMenuType)
+{
+    switch (popupMenuType) {
+        case CtMenu::POPUP_MENU_TYPE::Node:
+            return _build_popup_menu_model_from_xml4(_get_ui_str_menu(), "/menubar/menu[@action='TreeMenu']/*");
+        case CtMenu::POPUP_MENU_TYPE::Text:
+            return _build_popup_menu_model_from_xml4(_get_popup_menu_ui_str_text(), nullptr);
+        case CtMenu::POPUP_MENU_TYPE::Code:
+            return _build_popup_menu_model_from_xml4(_get_popup_menu_ui_str_code(), nullptr);
+        case CtMenu::POPUP_MENU_TYPE::Image:
+            return _build_popup_menu_model_from_xml4(_get_popup_menu_ui_str_image(), nullptr);
+        case CtMenu::POPUP_MENU_TYPE::Latex:
+            return _build_popup_menu_model_from_xml4(_get_popup_menu_ui_str_latex(), nullptr);
+        case CtMenu::POPUP_MENU_TYPE::Anchor:
+            return _build_popup_menu_model_from_xml4(_get_popup_menu_ui_str_anchor(), nullptr);
+        case CtMenu::POPUP_MENU_TYPE::EmbFile:
+            return _build_popup_menu_model_from_xml4(_get_popup_menu_ui_str_embfile(), nullptr);
+        case CtMenu::POPUP_MENU_TYPE::Terminal:
+            return _build_popup_menu_model_from_xml4(_get_popup_menu_ui_str_terminal(), nullptr);
+        case CtMenu::POPUP_MENU_TYPE::Link:
+        case CtMenu::POPUP_MENU_TYPE::Codebox:
+        case CtMenu::POPUP_MENU_TYPE::PopupMenuNum:
+            break;
+    }
+
+    struct MenuFrame {
+        Glib::RefPtr<Gio::Menu> menu;
+        Glib::RefPtr<Gio::Menu> section;
+    };
+    auto menu = Gio::Menu::create();
+    MenuFrame frame{menu, {}};
+    auto ensure_section = [](MenuFrame& menu_frame) {
+        if (not menu_frame.section) {
+            menu_frame.section = Gio::Menu::create();
+            menu_frame.menu->append_section({}, menu_frame.section);
+        }
+        return menu_frame.section;
+    };
+    auto add_action = [this, ensure_section](MenuFrame& menu_frame, const char* action_id) {
+        if (CtMenuAction* pAction = find_action(action_id)) {
+            ensure_section(menu_frame)->append(pAction->name, std::string("win.") + pAction->id);
+        }
+    };
+    auto add_separator = [](MenuFrame& menu_frame) {
+        menu_frame.section.reset();
+    };
+
+    if (popupMenuType == CtMenu::POPUP_MENU_TYPE::Link) {
+        add_action(frame, "apply_tag_link");
+        add_separator(frame);
+        add_action(frame, "link_cut");
+        add_action(frame, "link_copy");
+        add_action(frame, "link_dismiss");
+        add_action(frame, "link_delete");
+    }
+    else if (popupMenuType == CtMenu::POPUP_MENU_TYPE::Codebox) {
+        add_action(frame, "cut_plain");
+        add_action(frame, "copy_plain");
+        add_separator(frame);
+        add_action(frame, "codebox_load_from_file");
+        add_action(frame, "codebox_save_to_file");
+        add_separator(frame);
+        add_action(frame, "codebox_cut");
+        add_action(frame, "codebox_copy");
+        add_action(frame, "codebox_copy_content");
+        add_action(frame, "codebox_delete");
+        add_action(frame, "codebox_delete_keeping_text");
+        add_separator(frame);
+        add_action(frame, "codebox_increase_width");
+        add_action(frame, "codebox_decrease_width");
+        add_action(frame, "codebox_increase_height");
+        add_action(frame, "codebox_decrease_height");
+        add_separator(frame);
+        add_action(frame, "exec_code_all");
+        add_action(frame, "exec_code_los");
+        add_action(frame, "strip_trail_spaces");
+        add_action(frame, "repl_tabs_spaces");
+        add_separator(frame);
+        add_action(frame, "codebox_change_properties");
+    }
+    return menu;
+}
+
+Glib::RefPtr<Gio::Menu> CtMenu::build_popup_menu_table_cell_model4(const bool first_row,
+                                                                    const bool first_col,
+                                                                    const bool last_row,
+                                                                    const bool last_col)
+{
+    struct MenuFrame {
+        Glib::RefPtr<Gio::Menu> menu;
+        Glib::RefPtr<Gio::Menu> section;
+    };
+    auto menu = Gio::Menu::create();
+    MenuFrame frame{menu, {}};
+    auto ensure_section = [](MenuFrame& menu_frame) {
+        if (not menu_frame.section) {
+            menu_frame.section = Gio::Menu::create();
+            menu_frame.menu->append_section({}, menu_frame.section);
+        }
+        return menu_frame.section;
+    };
+    auto add_action = [this, ensure_section](MenuFrame& menu_frame, const char* action_id) {
+        if (CtMenuAction* pAction = find_action(action_id)) {
+            ensure_section(menu_frame)->append(pAction->name, std::string("win.") + pAction->id);
+        }
+    };
+    auto add_separator = [](MenuFrame& menu_frame) {
+        menu_frame.section.reset();
+    };
+
+    add_action(frame, "table_cut");
+    add_action(frame, "table_copy");
+    add_action(frame, "table_delete");
+    add_separator(frame);
+    add_action(frame, "table_column_add");
+    add_action(frame, "table_column_cut");
+    add_action(frame, "table_column_copy");
+    add_action(frame, "table_column_paste");
+    add_action(frame, "table_column_delete");
+    add_separator(frame);
+    if (not first_col) add_action(frame, "table_column_left");
+    if (not last_col) add_action(frame, "table_column_right");
+    add_separator(frame);
+    add_action(frame, "table_column_increase_width");
+    add_action(frame, "table_column_decrease_width");
+    add_separator(frame);
+    add_action(frame, "table_row_add");
+    add_action(frame, "table_row_cut");
+    add_action(frame, "table_row_copy");
+    add_action(frame, "table_row_paste");
+    add_action(frame, "table_row_delete");
+    add_separator(frame);
+    if (not first_row) add_action(frame, "table_row_up");
+    if (not last_row) add_action(frame, "table_row_down");
+    add_action(frame, "table_rows_sort_ascending");
+    add_action(frame, "table_rows_sort_descending");
+    add_separator(frame);
+    add_action(frame, "table_edit_properties");
+    add_action(frame, "table_export");
+
+    return menu;
+}
+
+Gtk::Box* CtMenu::_build_popup_menu_box4(POPUP_MENU_TYPE popupMenuType, Gtk::Popover* rootPopover)
+{
+    switch (popupMenuType) {
+        case CtMenu::POPUP_MENU_TYPE::Node:
+            return ct_popup_build_box_from_xml4(this, _pCtConfig, rootPopover, _get_ui_str_menu(), "/menubar/menu[@action='TreeMenu']/*");
+        case CtMenu::POPUP_MENU_TYPE::Text:
+            return ct_popup_build_box_from_xml4(this, _pCtConfig, rootPopover, _get_popup_menu_ui_str_text(), nullptr);
+        case CtMenu::POPUP_MENU_TYPE::Code:
+            return ct_popup_build_box_from_xml4(this, _pCtConfig, rootPopover, _get_popup_menu_ui_str_code(), nullptr);
+        case CtMenu::POPUP_MENU_TYPE::Image:
+            return ct_popup_build_box_from_xml4(this, _pCtConfig, rootPopover, _get_popup_menu_ui_str_image(), nullptr);
+        case CtMenu::POPUP_MENU_TYPE::Latex:
+            return ct_popup_build_box_from_xml4(this, _pCtConfig, rootPopover, _get_popup_menu_ui_str_latex(), nullptr);
+        case CtMenu::POPUP_MENU_TYPE::Anchor:
+            return ct_popup_build_box_from_xml4(this, _pCtConfig, rootPopover, _get_popup_menu_ui_str_anchor(), nullptr);
+        case CtMenu::POPUP_MENU_TYPE::EmbFile:
+            return ct_popup_build_box_from_xml4(this, _pCtConfig, rootPopover, _get_popup_menu_ui_str_embfile(), nullptr);
+        case CtMenu::POPUP_MENU_TYPE::Terminal:
+            return ct_popup_build_box_from_xml4(this, _pCtConfig, rootPopover, _get_popup_menu_ui_str_terminal(), nullptr);
+        case CtMenu::POPUP_MENU_TYPE::Link:
+        case CtMenu::POPUP_MENU_TYPE::Codebox:
+        case CtMenu::POPUP_MENU_TYPE::PopupMenuNum:
+            break;
+    }
+
+    auto* box = ct_popup_new_box4();
+    auto add_action = [this, box, rootPopover](const char* action_id) {
+        ct_popup_append_action4(*box, this, _pCtConfig, rootPopover, action_id);
+    };
+    auto add_separator = [box]() {
+        ct_popup_append_separator4(*box);
+    };
+
+    if (popupMenuType == CtMenu::POPUP_MENU_TYPE::Link) {
+        add_action("apply_tag_link");
+        add_separator();
+        add_action("link_cut");
+        add_action("link_copy");
+        add_action("link_dismiss");
+        add_action("link_delete");
+    }
+    else if (popupMenuType == CtMenu::POPUP_MENU_TYPE::Codebox) {
+        add_action("cut_plain");
+        add_action("copy_plain");
+        add_separator();
+        add_action("codebox_load_from_file");
+        add_action("codebox_save_to_file");
+        add_separator();
+        add_action("codebox_cut");
+        add_action("codebox_copy");
+        add_action("codebox_copy_content");
+        add_action("codebox_delete");
+        add_action("codebox_delete_keeping_text");
+        add_separator();
+        add_action("codebox_increase_width");
+        add_action("codebox_decrease_width");
+        add_action("codebox_increase_height");
+        add_action("codebox_decrease_height");
+        add_separator();
+        add_action("exec_code_all");
+        add_action("exec_code_los");
+        add_action("strip_trail_spaces");
+        add_action("repl_tabs_spaces");
+        add_separator();
+        add_action("codebox_change_properties");
+    }
+    return box;
+}
+
+Gtk::Box* CtMenu::_build_popup_menu_table_cell_box4(Gtk::Popover* rootPopover,
+                                                    const bool first_row,
+                                                    const bool first_col,
+                                                    const bool last_row,
+                                                    const bool last_col)
+{
+    auto* box = ct_popup_new_box4();
+    auto add_action = [this, box, rootPopover](const char* action_id) {
+        ct_popup_append_action4(*box, this, _pCtConfig, rootPopover, action_id);
+    };
+    auto add_separator = [box]() {
+        ct_popup_append_separator4(*box);
+    };
+
+    add_action("table_cut");
+    add_action("table_copy");
+    add_action("table_delete");
+    add_separator();
+    add_action("table_column_add");
+    add_action("table_column_cut");
+    add_action("table_column_copy");
+    add_action("table_column_paste");
+    add_action("table_column_delete");
+    add_separator();
+    if (not first_col) add_action("table_column_left");
+    if (not last_col) add_action("table_column_right");
+    add_separator();
+    add_action("table_column_increase_width");
+    add_action("table_column_decrease_width");
+    add_separator();
+    add_action("table_row_add");
+    add_action("table_row_cut");
+    add_action("table_row_copy");
+    add_action("table_row_paste");
+    add_action("table_row_delete");
+    add_separator();
+    if (not first_row) add_action("table_row_up");
+    if (not last_row) add_action("table_row_down");
+    add_action("table_rows_sort_ascending");
+    add_action("table_rows_sort_descending");
+    add_separator();
+    add_action("table_edit_properties");
+    add_action("table_export");
+
+    return box;
+}
+
+void CtMenu::popup_menu_at_widget4(POPUP_MENU_TYPE popupMenuType, Gtk::Widget& parent, double x, double y)
+{
+    auto* popover = ct_popup_new_root_popover4(parent, x, y);
+    popover->set_child(*_build_popup_menu_box4(popupMenuType, popover));
+    popover->popup();
+}
+
+void CtMenu::popup_menu_table_cell_at_widget4(Gtk::Widget& parent,
+                                              double x,
+                                              double y,
+                                              const bool first_row,
+                                              const bool first_col,
+                                              const bool last_row,
+                                              const bool last_col)
+{
+    auto* popover = ct_popup_new_root_popover4(parent, x, y);
+    popover->set_child(*_build_popup_menu_table_cell_box4(popover, first_row, first_col, last_row, last_col));
+    popover->popup();
 }
 
 Gtk::Popover* CtMenu::_build_actions_popover()
@@ -1094,4 +1690,3 @@ Gtk::SeparatorMenuItem* CtMenu::_add_menu_separator(Gtk::MenuShell* pMenuShell)
     return pSeparatorItem;
 }
 #endif /* GTKMM_MAJOR_VERSION < 4 && !defined(GTKMM_DISABLE_DEPRECATED) */
-

@@ -426,8 +426,8 @@ bool CtActions::_need_node_swap(Gtk::TreeModel::iterator& leftIter, Gtk::TreeMod
 bool CtActions::_tree_sort_level_and_sublevels(const Gtk::TreeNodeChildren& children, bool ascending)
 {
     #if GTKMM_MAJOR_VERSION >= 4
-    // TODO: implement sibling sorting for GTK4; for now, recurse only.
-    bool swap_excecuted = false;
+    auto need_swap = [this,&ascending](Gtk::TreeModel::iterator& l, Gtk::TreeModel::iterator& r) { return _need_node_swap(l, r, ascending); };
+    bool swap_excecuted = CtMiscUtil::node_siblings_sort(_pCtMainWin->get_tree_store().get_store(), children, need_swap);
     for (auto it = children.begin(); it != children.end(); ++it) {
         // gtkmm4: child->children() returns const-children; recurse by casting to match signature
         if (_tree_sort_level_and_sublevels(static_cast<const Gtk::TreeNodeChildren&>(it->children()), ascending))

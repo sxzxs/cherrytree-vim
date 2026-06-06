@@ -300,14 +300,33 @@ private:
                                     guint time);
     #else
     void _setup_treeview_drag_and_drop_gtk4();
-    void _on_treeview_drag_source_prepare_gtk4(const Glib::RefPtr<Gdk::Drag>& drag);
+    void _setup_treeview_interaction_gtk4();
+    void _on_treeview_button_pressed_gtk4(int n_press, double x, double y);
+    bool _on_treeview_key_pressed_gtk4(guint keyval, guint keycode, Gdk::ModifierType state);
+    bool _on_treeview_scroll_gtk4(double dx, double dy);
+    Glib::RefPtr<Gdk::ContentProvider> _on_treeview_drag_source_prepare_gtk4(double x, double y);
     bool _on_treeview_drop_target_drop_gtk4(const Glib::ValueBase& value, double x, double y);
     Glib::RefPtr<Gtk::DragSource> _treeDragSource4;
     Glib::RefPtr<Gtk::DropTarget> _treeDropTarget4;
+    Glib::RefPtr<Gtk::GestureClick> _treeClickController4;
+    Glib::RefPtr<Gtk::EventControllerKey> _treeKeyController4;
+    Glib::RefPtr<Gtk::EventControllerScroll> _treeScrollController4;
     #endif
 
     #if GTKMM_MAJOR_VERSION < 4
     void _on_textview_populate_popup(Gtk::Menu* menu);
+    #else
+    void _setup_textview_interaction_gtk4();
+    void _on_textview_button_pressed_gtk4(int n_press, double x, double y);
+    bool _on_textview_key_pressed_gtk4(guint keyval, guint keycode, Gdk::ModifierType state);
+    bool _on_textview_scroll_gtk4(double dx, double dy);
+    void _on_textview_motion_gtk4(double x, double y);
+    bool _show_textview_context_menu_gtk4(double x, double y);
+    bool _show_textview_context_menu_at_cursor_gtk4();
+    Glib::RefPtr<Gtk::GestureClick> _textClickController4;
+    Glib::RefPtr<Gtk::EventControllerKey> _textKeyController4;
+    Glib::RefPtr<Gtk::EventControllerScroll> _textScrollController4;
+    Glib::RefPtr<Gtk::EventControllerMotion> _textMotionController4;
     #endif
     #if GTKMM_MAJOR_VERSION < 4 && !defined(GTKMM_DISABLE_DEPRECATED)
     bool _on_textview_motion_notify_event(GdkEventMotion* event);

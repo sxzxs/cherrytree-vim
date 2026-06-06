@@ -22,14 +22,88 @@
  */
 
 #include <sigc++/sigc++.h>
+#include <functional>
 #include "ct_main_win.h"
 #include "ct_text_view.h"
 #include "ct_actions.h"
 #include "ct_list.h"
 #include "ct_clipboard.h"
+#if GTKMM_MAJOR_VERSION >= 4 || defined(GTKMM_DISABLE_DEPRECATED)
+#include <gdkmm/contentformats.h>
+#include <giomm/inputstream.h>
+#include <gtkmm/eventcontrollerfocus.h>
+#include <gtkmm/eventcontrollerkey.h>
+#include <gtkmm/gestureclick.h>
+#endif
 
 #ifdef HAVE_GSPELL
 std::unordered_map<std::string, GspellChecker*> CtTextView::_static_spell_checkers;
+#endif
+
+#if GTKMM_MAJOR_VERSION >= 4 || defined(GTKMM_DISABLE_DEPRECATED)
+namespace {
+void gtk4_read_drop_stream_chunks(const Glib::RefPtr<Gio::InputStream>& stream,
+                                  const Glib::RefPtr<Gdk::Drop>& drop,
+                                  CtMainWin* pCtMainWin,
+                                  Gtk::TextView* pTextView)
+{
+    if (!stream or !drop or !pCtMainWin or !pTextView) {
+        if (drop) {
+            drop->failed();
+        }
+        return;
+    }
+
+    auto data = std::make_shared<std::string>();
+    auto read_next = std::make_shared<std::function<void()>>();
+    *read_next = [stream, drop, pCtMainWin, pTextView, data, read_next]() {
+        stream->read_bytes_async(4096, [stream, drop, pCtMainWin, pTextView, data, read_next](const Glib::RefPtr<Gio::AsyncResult>& result) {
+            try {
+                auto bytes = stream->read_bytes_finish(result);
+                gsize size{0};
+                const auto* bytes_data = static_cast<const char*>(bytes ? bytes->get_data(size) : nullptr);
+                if (0 == size) {
+                    CtClipboard{pCtMainWin}.on_received_to_uri_list_gtk4(str::sanitize_bad_symbols(Glib::ustring{*data}),
+                                                                         pTextView,
+                                                                         false/*forcePlain*/,
+                                                                         true/*fromDragNDrop*/);
+                    drop->finish(Gdk::DragAction::COPY);
+                    return;
+                }
+                if (bytes_data) {
+                    data->append(bytes_data, static_cast<size_t>(size));
+                }
+                (*read_next)();
+            }
+            catch (const Glib::Error& e) {
+                spdlog::warn("GTK4 drop read failed: {}", e.what());
+                drop->failed();
+            }
+        });
+    };
+    (*read_next)();
+}
+
+#if GTKMM_MAJOR_VERSION >= 4
+bool gtk4_iter_contains_buffer_coords(Gtk::TextView& text_view, const Gtk::TextIter& text_iter, int x, int y)
+{
+    (void)y;
+    Gdk::Rectangle iter_rect;
+    text_view.get_iter_location(text_iter, iter_rect);
+    return (iter_rect.get_width() >= 0 and iter_rect.get_x() <= x and x <= (iter_rect.get_x() + iter_rect.get_width())) or
+           (iter_rect.get_width() < 0 and (iter_rect.get_x() + iter_rect.get_width()) <= x and x <= iter_rect.get_x());
+}
+
+void gtk4_widget_to_buffer_coords(Gtk::TextView& text_view, double widget_x, double widget_y, int& buffer_x, int& buffer_y)
+{
+    text_view.window_to_buffer_coords(Gtk::TextWindowType::WIDGET,
+                                      static_cast<int>(widget_x),
+                                      static_cast<int>(widget_y),
+                                      buffer_x,
+                                      buffer_y);
+}
+#endif
+}
 #endif
 
 CtTextView::CtTextView(CtMainWin* pCtMainWin)
@@ -111,6 +185,46 @@ CtTextView::CtTextView(CtMainWin* pCtMainWin)
         _columnEdit.focus_in();
         return false; /*propagate event*/
     }, false);
+#else
+    auto column_key = Gtk::EventControllerKey::create();
+    column_key->signal_key_pressed().connect([this](guint keyval, guint, Gdk::ModifierType) -> bool {
+        if (keyval == GDK_KEY_Control_L or keyval == GDK_KEY_Control_R) {
+            _columnEdit.button_control_changed(true/*isDown*/);
+        }
+        else if (keyval == GDK_KEY_Alt_L or keyval == GDK_KEY_Alt_R) {
+            _columnEdit.button_alt_changed(true/*isDown*/);
+        }
+        return false;
+    }, false);
+    column_key->signal_key_released().connect([this](guint keyval, guint, Gdk::ModifierType) {
+        if (keyval == GDK_KEY_Control_L or keyval == GDK_KEY_Control_R) {
+            _columnEdit.button_control_changed(false/*isDown*/);
+        }
+        else if (keyval == GDK_KEY_Alt_L or keyval == GDK_KEY_Alt_R) {
+            _columnEdit.button_alt_changed(false/*isDown*/);
+        }
+    });
+    _pTextView->add_controller(column_key);
+
+    auto column_click = Gtk::GestureClick::create();
+    column_click->set_button(0);
+    column_click->signal_released().connect([this, column_click](int, double, double) {
+        if (column_click->get_current_button() == 1) {
+            _columnEdit.button_1_released();
+        }
+    });
+    _pTextView->add_controller(column_click);
+
+    auto focus_controller = Gtk::EventControllerFocus::create();
+    focus_controller->signal_leave().connect([this]() {
+        _columnEdit.column_mode_off();
+        _set_highlight_current_line_enabled(false);
+    });
+    focus_controller->signal_enter().connect([this]() {
+        _set_highlight_current_line_enabled(true);
+        _columnEdit.focus_in();
+    });
+    _pTextView->add_controller(focus_controller);
 #endif
 
     #if GTKMM_MAJOR_VERSION < 4 && !defined(GTKMM_DISABLE_DEPRECATED)
@@ -137,12 +251,102 @@ CtTextView::CtTextView(CtMainWin* pCtMainWin)
 
 CtTextView::~CtTextView()
 {
+#if GTKMM_MAJOR_VERSION >= 4 && GTK_SOURCE_CHECK_VERSION(5, 4, 0)
+    _vim_disconnect_notify_signals();
+    if (_vimKeyController) {
+        gtk_event_controller_key_set_im_context(_vimKeyController->gobj(), nullptr);
+        _pTextView->remove_controller(_vimKeyController);
+        _vimKeyController.reset();
+    }
+    if (_vimIMContext) {
+        gtk_im_context_set_client_widget(_vimIMContext, nullptr);
+        g_clear_object(&_vimIMContext);
+    }
+#endif
 #ifdef HAVE_LIBSPELLING
     g_clear_object(&_spellingAdapter);
     g_clear_object(&_spellingChecker);
 #endif
     g_object_unref(G_OBJECT(_pGtkSourceView));
 }
+
+#if GTKMM_MAJOR_VERSION >= 4 && GTK_SOURCE_CHECK_VERSION(5, 4, 0)
+void CtTextView::_on_vim_notify_command_text(GObject*, GParamSpec*, gpointer user_data)
+{
+    static_cast<CtTextView*>(user_data)->_vim_update_status();
+}
+
+void CtTextView::_on_vim_write(GtkSourceVimIMContext*, GtkSourceView*, const char* path, gpointer user_data)
+{
+    auto* self = static_cast<CtTextView*>(user_data);
+    if (path and path[0]) {
+        self->_pCtStatusBar->update_status("VIM :w path not supported");
+        return;
+    }
+    self->_pCtMainWin->get_ct_actions()->file_save();
+    self->_pCtStatusBar->update_status("VIM :w");
+}
+
+void CtTextView::_vim_connect_notify_signals()
+{
+    if (!_vimIMContext or _vimNotifyCommandTextHandler) {
+        return;
+    }
+    _vimNotifyCommandTextHandler = g_signal_connect(G_OBJECT(_vimIMContext),
+                                                    "notify::command-text",
+                                                    G_CALLBACK(CtTextView::_on_vim_notify_command_text),
+                                                    this);
+    _vimNotifyCommandBarTextHandler = g_signal_connect(G_OBJECT(_vimIMContext),
+                                                       "notify::command-bar-text",
+                                                       G_CALLBACK(CtTextView::_on_vim_notify_command_text),
+                                                       this);
+    _vimWriteHandler = g_signal_connect(G_OBJECT(_vimIMContext),
+                                        "write",
+                                        G_CALLBACK(CtTextView::_on_vim_write),
+                                        this);
+}
+
+void CtTextView::_vim_disconnect_notify_signals()
+{
+    if (!_vimIMContext) {
+        _vimNotifyCommandTextHandler = 0;
+        _vimNotifyCommandBarTextHandler = 0;
+        _vimWriteHandler = 0;
+        return;
+    }
+    if (_vimNotifyCommandTextHandler) {
+        g_signal_handler_disconnect(G_OBJECT(_vimIMContext), _vimNotifyCommandTextHandler);
+        _vimNotifyCommandTextHandler = 0;
+    }
+    if (_vimNotifyCommandBarTextHandler) {
+        g_signal_handler_disconnect(G_OBJECT(_vimIMContext), _vimNotifyCommandBarTextHandler);
+        _vimNotifyCommandBarTextHandler = 0;
+    }
+    if (_vimWriteHandler) {
+        g_signal_handler_disconnect(G_OBJECT(_vimIMContext), _vimWriteHandler);
+        _vimWriteHandler = 0;
+    }
+}
+
+void CtTextView::_vim_update_status()
+{
+    if (!_vimModeEnabled or !_vimIMContext) {
+        return;
+    }
+    const char* command_bar_text = gtk_source_vim_im_context_get_command_bar_text(GTK_SOURCE_VIM_IM_CONTEXT(_vimIMContext));
+    const char* command_text = gtk_source_vim_im_context_get_command_text(GTK_SOURCE_VIM_IM_CONTEXT(_vimIMContext));
+    Glib::ustring status{"VIM"};
+    if (command_bar_text and command_bar_text[0]) {
+        status += " ";
+        status += command_bar_text;
+    }
+    else if (command_text and command_text[0]) {
+        status += " ";
+        status += command_text;
+    }
+    _pCtStatusBar->update_status(status);
+}
+#endif
 
 void CtTextView::_set_highlight_current_line_enabled(const bool enabled)
 {
@@ -393,6 +597,38 @@ void CtTextView::for_event_after_double_click_button12(GdkEvent* event)
 #endif
 }
 
+#if GTKMM_MAJOR_VERSION >= 4
+void CtTextView::for_event_after_double_click_button12_gtk4(double x, double y, guint button)
+{
+    auto text_buffer = get_buffer();
+    if (not text_buffer) {
+        return;
+    }
+
+    int bx = 0;
+    int by = 0;
+    gtk4_widget_to_buffer_coords(*_pTextView, x, y, bx, by);
+    Gtk::TextIter text_iter;
+    if (not _pTextView->get_iter_at_location(text_iter, bx, by)) {
+        return;
+    }
+
+    if (gtk4_iter_contains_buffer_coords(*_pTextView, text_iter, bx, by) and _pCtConfig->doubleClickLink) {
+        auto tags = text_iter.get_tags();
+        for (auto& tag : tags) {
+            Glib::ustring tag_name = tag->property_name();
+            if (str::startswith(tag_name, CtConst::TAG_LINK)) {
+                _pCtMainWin->get_ct_actions()->link_clicked(tag_name.substr(5), button == 2);
+                text_buffer->place_cursor(text_iter);
+                return;
+            }
+        }
+    }
+
+    _pCtMainWin->apply_tag_try_automatic_bounds(text_buffer, text_iter);
+}
+#endif
+
 // Called after every Triple Click with button 1 or 2
 void CtTextView::for_event_after_triple_click_button12(GdkEvent* event)
 {
@@ -413,6 +649,31 @@ void CtTextView::for_event_after_triple_click_button12(GdkEvent* event)
     }
 #endif
 }
+
+#if GTKMM_MAJOR_VERSION >= 4
+void CtTextView::for_event_after_triple_click_button12_gtk4(double x, double y, guint32 event_time)
+{
+    if (not _pCtConfig->tripleClickParagraph or
+        not _pCtMainWin->curr_tree_iter().get_node_is_rich_text() or
+        get_todo_rotate_time() == event_time)
+    {
+        return;
+    }
+
+    auto text_buffer = get_buffer();
+    if (not text_buffer) {
+        return;
+    }
+
+    int bx = 0;
+    int by = 0;
+    gtk4_widget_to_buffer_coords(*_pTextView, x, y, bx, by);
+    Gtk::TextIter iter_start;
+    if (_pTextView->get_iter_at_location(iter_start, bx, by)) {
+        _pCtMainWin->apply_tag_try_automatic_bounds_paragraph(text_buffer, iter_start);
+    }
+}
+#endif
 
 #ifdef MD_AUTO_REPLACEMENT
 bool CtTextView::_markdown_filter_active() {
@@ -440,6 +701,62 @@ void CtTextView::set_buffer(const Glib::RefPtr<Gtk::TextBuffer>& buffer)
     // Setup the markdown filter for a new buffer
     if (_markdown_filter_active()) _md_handler->buffer(get_buffer());
 #endif // MD_AUTO_REPLACEMENT
+}
+
+bool CtTextView::set_vim_mode_enabled(bool enabled)
+{
+    if (enabled == _vimModeEnabled) {
+#if GTKMM_MAJOR_VERSION >= 4 && GTK_SOURCE_CHECK_VERSION(5, 4, 0)
+        if (enabled) {
+            _vim_update_status();
+        }
+#endif
+        return _vimModeEnabled;
+    }
+#if GTKMM_MAJOR_VERSION >= 4 && GTK_SOURCE_CHECK_VERSION(5, 4, 0)
+    if (enabled) {
+        if (!_vimIMContext) {
+            _vimIMContext = gtk_source_vim_im_context_new();
+        }
+        if (!_vimKeyController) {
+            _vimKeyController = Gtk::EventControllerKey::create();
+            _vimKeyController->set_propagation_phase(Gtk::PropagationPhase::CAPTURE);
+            _pTextView->add_controller(_vimKeyController);
+        }
+        gtk_event_controller_key_set_im_context(_vimKeyController->gobj(), _vimIMContext);
+        gtk_im_context_set_client_widget(_vimIMContext, GTK_WIDGET(_pGtkSourceView));
+        gtk_im_context_reset(_vimIMContext);
+        _vim_connect_notify_signals();
+        _pTextView->grab_focus();
+    }
+    else {
+        _vim_disconnect_notify_signals();
+        if (_vimKeyController) {
+            gtk_event_controller_key_set_im_context(_vimKeyController->gobj(), nullptr);
+        }
+        if (_vimIMContext) {
+            gtk_im_context_reset(_vimIMContext);
+            gtk_im_context_set_client_widget(_vimIMContext, nullptr);
+        }
+    }
+    _vimModeEnabled = enabled;
+    if (enabled) {
+        _vim_update_status();
+    }
+    else {
+        _pCtStatusBar->update_status("VIM mode disabled");
+    }
+#else
+    (void)enabled;
+    _vimModeEnabled = false;
+    _pCtStatusBar->update_status("VIM mode requires GTK4 and GtkSourceView 5.4+");
+#endif
+    return _vimModeEnabled;
+}
+
+bool CtTextView::toggle_vim_mode()
+{
+    return set_vim_mode_enabled(not _vimModeEnabled);
 }
 
 #ifdef HAVE_LIBSPELLING
@@ -540,14 +857,58 @@ void CtTextView::for_event_after_button_press(GdkEvent* event)
 #endif
 }
 
-// Called after every gtk.gdk.KEY_PRESS on the SourceView
-void CtTextView::for_event_after_key_press(GdkEvent* event, const Glib::ustring& syntaxHighlighting)
-{
 #if GTKMM_MAJOR_VERSION >= 4
-    (void)event;
-    (void)syntaxHighlighting;
-    return;
-#else
+void CtTextView::for_event_after_button_press_gtk4(double x, double y, guint button, guint32 event_time)
+{
+    auto text_buffer = get_buffer();
+    if (not text_buffer) {
+        return;
+    }
+
+    int bx = 0;
+    int by = 0;
+    gtk4_widget_to_buffer_coords(*_pTextView, x, y, bx, by);
+
+    if (button == 1 or button == 2) {
+        int trailing = 0;
+        Gtk::TextIter text_iter;
+        if (not _pTextView->get_iter_at_position(text_iter, trailing, bx, by)) {
+            return;
+        }
+        if (not gtk4_iter_contains_buffer_coords(*_pTextView, text_iter, bx, by)) {
+            return;
+        }
+
+        auto tags = text_iter.get_tags();
+        for (auto& tag : tags) {
+            Glib::ustring tag_name = tag->property_name();
+            if (str::startswith(tag_name, CtConst::TAG_LINK)) {
+                if (not _pCtConfig->doubleClickLink) {
+                    _pCtMainWin->get_ct_actions()->link_clicked(tag_name.substr(5), button == 2);
+                }
+                return;
+            }
+        }
+        if (CtList{_pCtConfig, text_buffer}.is_list_todo_beginning(text_iter)) {
+            if (_pCtMainWin->get_ct_actions()->_is_curr_node_not_read_only_or_error()) {
+                CtList{_pCtConfig, text_buffer}.todo_list_rotate_status(text_iter);
+                _todoRotateTime = event_time;
+            }
+        }
+    }
+    else if (button == 3 and not text_buffer->get_has_selection()) {
+        Gtk::TextIter text_iter;
+        if (_pTextView->get_iter_at_location(text_iter, bx, by)) {
+            text_buffer->place_cursor(text_iter);
+        }
+    }
+}
+#endif
+
+void CtTextView::_for_event_after_key_press(const guint keyval,
+                                            const bool shift_down,
+                                            const Glib::ustring& syntaxHighlighting)
+{
     if (_pCtMainWin->curr_tree_iter().get_node_read_only()) {
         return;
     }
@@ -556,13 +917,13 @@ void CtTextView::for_event_after_key_press(GdkEvent* event, const Glib::ustring&
 
     if (not is_code and
         _pCtConfig->autoSmartQuotes and
-        (event->key.keyval == GDK_KEY_quotedbl or event->key.keyval == GDK_KEY_apostrophe))
+        (keyval == GDK_KEY_quotedbl or keyval == GDK_KEY_apostrophe))
     {
         Gtk::TextIter iter_insert = text_buffer->get_insert()->get_iter();
         int offset_1 = iter_insert.get_offset()-1;
         if (offset_1 > 0) {
             Glib::ustring  start_char, char_0, char_1;
-            if (event->key.keyval == GDK_KEY_quotedbl) {
+            if (keyval == GDK_KEY_quotedbl) {
                 start_char = CtConst::CHAR_DQUOTE;
                 char_0 = _pCtConfig->chars_smart_dquote[0];
                 char_1 = _pCtConfig->chars_smart_dquote[1];
@@ -594,8 +955,8 @@ void CtTextView::for_event_after_key_press(GdkEvent* event, const Glib::ustring&
             }
         }
     }
-    else if (event->key.state & Gdk::SHIFT_MASK) {
-        if (GDK_KEY_Return == event->key.keyval or GDK_KEY_KP_Enter == event->key.keyval) {
+    else if (shift_down) {
+        if (GDK_KEY_Return == keyval or GDK_KEY_KP_Enter == keyval) {
             Gtk::TextIter iter_insert = text_buffer->get_insert()->get_iter();
             Gtk::TextIter iter_start = iter_insert;
             iter_start.backward_char();
@@ -605,7 +966,7 @@ void CtTextView::for_event_after_key_press(GdkEvent* event, const Glib::ustring&
             }
         }
     }
-    else if (GDK_KEY_Return == event->key.keyval or GDK_KEY_KP_Enter == event->key.keyval or GDK_KEY_space == event->key.keyval) {
+    else if (GDK_KEY_Return == keyval or GDK_KEY_KP_Enter == keyval or GDK_KEY_space == keyval) {
         Gtk::TextIter iter_insert = text_buffer->get_insert()->get_iter();
         if (syntaxHighlighting == CtConst::RICH_TEXT_ID) {
             Gtk::TextIter iter_end_link = iter_insert;
@@ -615,7 +976,7 @@ void CtTextView::for_event_after_key_press(GdkEvent* event, const Glib::ustring&
             }
         }
         Gtk::TextIter iter_start = iter_insert;
-        if (GDK_KEY_Return == event->key.keyval or GDK_KEY_KP_Enter == event->key.keyval) {
+        if (GDK_KEY_Return == keyval or GDK_KEY_KP_Enter == keyval) {
             int cursor_key_press = iter_insert.get_offset();
             //print "cursor_key_press", cursor_key_press
             if (cursor_key_press == _pCtMainWin->cursor_key_press()) {
@@ -783,8 +1144,27 @@ void CtTextView::for_event_after_key_press(GdkEvent* event, const Glib::ustring&
             }
         }
     }
+}
+
+// Called after every gtk.gdk.KEY_PRESS on the SourceView
+void CtTextView::for_event_after_key_press(GdkEvent* event, const Glib::ustring& syntaxHighlighting)
+{
+#if GTKMM_MAJOR_VERSION >= 4
+    (void)event;
+    (void)syntaxHighlighting;
+#else
+    _for_event_after_key_press(event->key.keyval, event->key.state & Gdk::SHIFT_MASK, syntaxHighlighting);
 #endif
 }
+
+#if GTKMM_MAJOR_VERSION >= 4
+void CtTextView::for_event_after_key_press_gtk4(guint keyval, Gdk::ModifierType state, const Glib::ustring& syntaxHighlighting)
+{
+    const bool shift_down = (state & Gdk::ModifierType::SHIFT_MASK) != Gdk::ModifierType::NO_MODIFIER_MASK;
+    _for_event_after_key_press(keyval, shift_down, syntaxHighlighting);
+}
+
+#endif
 
 // Looks at all tags covering the position (x, y) in the text view
 // and if one of them is a link, change the cursor to the HAND2 cursor
@@ -878,9 +1258,105 @@ void CtTextView::cursor_and_tooltips_reset()
 void CtTextView::zoom_text(const std::optional<bool> is_increase, const std::string& syntaxHighlighting)
 {
 #if GTKMM_MAJOR_VERSION >= 4
-    (void)is_increase;
-    (void)syntaxHighlighting;
-    return;
+    auto font_size_from_config = [](const Glib::ustring& font_str, int fallback) -> int {
+        const Pango::FontDescription font_desc(font_str);
+        const int size = font_desc.get_size() / Pango::SCALE;
+        return size > 0 ? size : fallback;
+    };
+
+    const bool is_rt = syntaxHighlighting == CtConst::RICH_TEXT_ID or syntaxHighlighting == CtConst::TABLE_CELL_TEXT_ID;
+    const bool is_rt_ms_dedic = is_rt and _pCtConfig->msDedicatedFont and not _pCtConfig->monospaceFont.empty();
+    const bool is_pt = syntaxHighlighting == CtConst::PLAIN_TEXT_ID;
+    const int size_pre = font_size_from_config(is_rt ? _pCtConfig->rtFont : (is_pt ? _pCtConfig->ptFont : _pCtConfig->codeFont), 10);
+    int size_ms_pre = 0;
+    if (is_rt_ms_dedic) {
+        size_ms_pre = font_size_from_config(_pCtConfig->monospaceFont, size_pre);
+    }
+
+    int size_new = 0;
+    int size_ms_new = 0;
+    if (is_increase.has_value()) {
+        if (is_rt) {
+            if (0 == _pCtConfig->rtResetFontSize) {
+                _pCtConfig->rtResetFontSize = size_pre;
+                spdlog::debug("{} rt set reset to {}", __FUNCTION__, size_pre);
+            }
+            if (is_rt_ms_dedic) {
+                if (0 == _pCtConfig->msResetFontSize) {
+                    _pCtConfig->msResetFontSize = size_ms_pre;
+                    spdlog::debug("{} ms set reset to {}", __FUNCTION__, size_ms_pre);
+                }
+                size_ms_new = size_ms_pre + (is_increase.value() ? 1 : -1);
+            }
+        }
+        else if (is_pt) {
+            if (0 == _pCtConfig->ptResetFontSize) {
+                _pCtConfig->ptResetFontSize = size_pre;
+                spdlog::debug("{} pt set reset to {}", __FUNCTION__, size_pre);
+            }
+        }
+        else {
+            if (0 == _pCtConfig->codeResetFontSize) {
+                _pCtConfig->codeResetFontSize = size_pre;
+                spdlog::debug("{} code set reset to {}", __FUNCTION__, size_pre);
+            }
+        }
+        size_new = size_pre + (is_increase.value() ? 1 : -1);
+    }
+    else {
+        if (is_rt) {
+            if (0 == _pCtConfig->rtResetFontSize || size_pre == _pCtConfig->rtResetFontSize) {
+                spdlog::debug("{} rt reset not necessary", __FUNCTION__);
+            }
+            else {
+                size_new = _pCtConfig->rtResetFontSize;
+            }
+            if (is_rt_ms_dedic) {
+                if (0 == _pCtConfig->msResetFontSize || size_ms_pre == _pCtConfig->msResetFontSize) {
+                    spdlog::debug("{} ms reset not necessary", __FUNCTION__);
+                }
+                else {
+                    size_ms_new = _pCtConfig->msResetFontSize;
+                }
+            }
+        }
+        else if (is_pt) {
+            if (0 == _pCtConfig->ptResetFontSize || size_pre == _pCtConfig->ptResetFontSize) {
+                spdlog::debug("{} pt reset not necessary", __FUNCTION__);
+            }
+            else {
+                size_new = _pCtConfig->ptResetFontSize;
+            }
+        }
+        else {
+            if (0 == _pCtConfig->codeResetFontSize || size_pre == _pCtConfig->codeResetFontSize) {
+                spdlog::debug("{} code reset not necessary", __FUNCTION__);
+            }
+            else {
+                size_new = _pCtConfig->codeResetFontSize;
+            }
+        }
+    }
+    if (size_new > 0) {
+        if (size_new < 6) size_new = 6;
+        if (is_rt) {
+            _pCtConfig->rtFont = CtFontUtil::get_font_str(CtFontUtil::get_font_family(_pCtConfig->rtFont), size_new);
+            if (size_ms_new > 0) {
+                if (size_ms_new < 6) size_ms_new = 6;
+                _pCtConfig->monospaceFont = CtFontUtil::get_font_str(CtFontUtil::get_font_family(_pCtConfig->monospaceFont), size_ms_new);
+                if (auto tag = get_buffer()->get_tag_table()->lookup(CtConst::TAG_ID_MONOSPACE)) {
+                    tag->property_font() = _pCtConfig->monospaceFont;
+                }
+            }
+        }
+        else if (is_pt) {
+            _pCtConfig->ptFont = CtFontUtil::get_font_str(CtFontUtil::get_font_family(_pCtConfig->ptFont), size_new);
+        }
+        else {
+            _pCtConfig->codeFont = CtFontUtil::get_font_str(CtFontUtil::get_font_family(_pCtConfig->codeFont), size_new);
+        }
+        _pCtMainWin->emit_app_apply_for_each_window([](CtMainWin* win) { win->update_theme(); });
+    }
 #else
     Glib::RefPtr<Gtk::StyleContext> pContext = _pTextView->get_style_context();
     const Pango::FontDescription fontDesc = pContext->get_font(pContext->get_state());
@@ -1339,7 +1815,14 @@ void CtTextView::_setup_drag_and_drop_gtk4()
 
     // DropTarget: accept plain text and uri list for external drops, plus internal rich text (string)
     _dropTarget4 = Gtk::DropTarget::create(G_TYPE_STRING, Gdk::DragAction::MOVE | Gdk::DragAction::COPY);
+    _dropTarget4->signal_drop().connect(sigc::mem_fun(*this, &CtTextView::_on_drop_target_drop_gtk4), false);
     _pTextView->add_controller(_dropTarget4);
+
+    _dropTargetAsync4 = Gtk::DropTargetAsync::create(
+        Gdk::ContentFormats::create(std::vector<Glib::ustring>{CtConst::TARGET_URI_LIST}),
+        Gdk::DragAction::COPY);
+    _dropTargetAsync4->signal_drop().connect(sigc::mem_fun(*this, &CtTextView::_on_drop_target_async_drop_gtk4), false);
+    _pTextView->add_controller(_dropTargetAsync4);
 }
 
 void CtTextView::_on_drag_source_prepare_gtk4(const Glib::RefPtr<Gdk::Drag>& /*drag*/)
@@ -1393,13 +1876,45 @@ bool CtTextView::_on_drop_target_drop_gtk4(const Glib::ValueBase& value, double 
     if (G_VALUE_HOLDS(value.gobj(), G_TYPE_STRING)) {
         const gchar* p_data = g_value_get_string(value.gobj());
         const Glib::ustring data = p_data ? p_data : "";
-        if (data.find("\n") != Glib::ustring::npos && data.find("://") != Glib::ustring::npos) {
-            // Treat as uri-list (newline separated)
+        if (data.find("://") != Glib::ustring::npos or Glib::file_test(data, Glib::FILE_TEST_EXISTS)) {
             CtClipboard{_pCtMainWin}.on_received_to_uri_list_gtk4(data, _pTextView, false, true);
         } else {
             text_buffer->insert_at_cursor(data);
         }
     }
+    return true;
+}
+
+bool CtTextView::_on_drop_target_async_drop_gtk4(const Glib::RefPtr<Gdk::Drop>& drop, double x, double y)
+{
+    auto text_buffer = get_buffer();
+    if (!text_buffer or !drop) {
+        return false;
+    }
+
+    Gtk::TextIter drop_iter;
+    int trailing;
+    _pTextView->get_iter_at_position(drop_iter, trailing, static_cast<int>(x), static_cast<int>(y));
+    if (trailing > 0) {
+        drop_iter.forward_char();
+    }
+    text_buffer->place_cursor(drop_iter);
+
+    drop->read_async({CtConst::TARGET_URI_LIST}, Glib::PRIORITY_DEFAULT, [drop, win = _pCtMainWin, text_view = _pTextView](const Glib::RefPtr<Gio::AsyncResult>& result) {
+        try {
+            Glib::ustring mime_type;
+            auto stream = drop->read_finish(result, mime_type);
+            if (!stream) {
+                drop->failed();
+                return;
+            }
+            gtk4_read_drop_stream_chunks(stream, drop, win, text_view);
+        }
+        catch (const Glib::Error& e) {
+            spdlog::warn("GTK4 drop read setup failed: {}", e.what());
+            drop->failed();
+        }
+    });
     return true;
 }
 #endif

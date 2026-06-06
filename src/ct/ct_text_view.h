@@ -27,6 +27,13 @@
 #include "ct_column_edit.h"
 
 #include <gtkmm/textview.h>
+#include <gtksourceview/gtksource.h>
+#if GTKMM_MAJOR_VERSION >= 4 || defined(GTKMM_DISABLE_DEPRECATED)
+#include <gtkmm/dragsource.h>
+#include <gtkmm/droptarget.h>
+#include <gtkmm/droptargetasync.h>
+#include <gtkmm/eventcontrollerkey.h>
+#endif
 #ifdef HAVE_GSPELL
 #include <gspell/gspell.h>
 #endif
@@ -66,10 +73,19 @@ public:
     void for_event_after_triple_click_button12(GdkEvent* event);
     void for_event_after_button_press(GdkEvent* event);
     void for_event_after_key_press(GdkEvent* event, const Glib::ustring& syntaxHighlighting);
+#if GTKMM_MAJOR_VERSION >= 4
+    void for_event_after_double_click_button12_gtk4(double x, double y, guint button);
+    void for_event_after_triple_click_button12_gtk4(double x, double y, guint32 event_time);
+    void for_event_after_button_press_gtk4(double x, double y, guint button, guint32 event_time);
+    void for_event_after_key_press_gtk4(guint keyval, Gdk::ModifierType state, const Glib::ustring& syntaxHighlighting);
+#endif
 
     void cursor_and_tooltips_handler(int x, int y);
     void cursor_and_tooltips_reset();
     void zoom_text(const std::optional<bool> is_increase, const std::string& syntaxHighlighting);
+    bool get_vim_mode_enabled() const { return _vimModeEnabled; }
+    bool set_vim_mode_enabled(bool enabled);
+    bool toggle_vim_mode();
     void set_spell_check(bool allow_on);
     void synch_spell_check_change_from_gspell_right_click_menu();
 
@@ -109,11 +125,19 @@ public:
 
 private:
     bool          _apply_tag_try_link(Gtk::TextIter iter_end, int offset_cursor);
+    void          _for_event_after_key_press(guint keyval, bool shift_down, const Glib::ustring& syntaxHighlighting);
     Glib::ustring _get_former_line_indentation(Gtk::TextIter iter_start);
     void          _special_char_replace(gunichar special_char, Gtk::TextIter iter_start, Gtk::TextIter iter_insert);
     /// Replace the char between iter_start and iter_end with another one
     void          _special_char_replace(Glib::ustring special_char, Gtk::TextIter iter_start, Gtk::TextIter iter_end);
     void          _set_highlight_current_line_enabled(const bool enabled);
+#if GTKMM_MAJOR_VERSION >= 4 && GTK_SOURCE_CHECK_VERSION(5, 4, 0)
+    void          _vim_connect_notify_signals();
+    void          _vim_disconnect_notify_signals();
+    void          _vim_update_status();
+    static void   _on_vim_notify_command_text(GObject*, GParamSpec*, gpointer user_data);
+    static void   _on_vim_write(GtkSourceVimIMContext*, GtkSourceView*, const char* path, gpointer user_data);
+#endif
 #ifdef HAVE_LIBSPELLING
     void          _libspelling_rebuild_adapter(GtkTextBuffer* pGtkTextBuffer);
 #endif
@@ -133,9 +157,11 @@ private:
     void _setup_drag_and_drop_gtk4();
     void _on_drag_source_prepare_gtk4(const Glib::RefPtr<Gdk::Drag>& drag);
     bool _on_drop_target_drop_gtk4(const Glib::ValueBase& value, double x, double y);
+    bool _on_drop_target_async_drop_gtk4(const Glib::RefPtr<Gdk::Drop>& drop, double x, double y);
     // GTK4 controller refs and state for internal rich text drag
     Glib::RefPtr<Gtk::DragSource> _dragSource4;
     Glib::RefPtr<Gtk::DropTarget> _dropTarget4;
+    Glib::RefPtr<Gtk::DropTargetAsync> _dropTargetAsync4;
     Glib::ustring _drag_serialized_rich_text4;
     int _drag_start_offset4{0};
     int _drag_end_offset4{0};
@@ -162,6 +188,13 @@ private:
     SpellingChecker* _spellingChecker{nullptr};
     SpellingTextBufferAdapter* _spellingAdapter{nullptr};
 #endif
+#if GTKMM_MAJOR_VERSION >= 4 && GTK_SOURCE_CHECK_VERSION(5, 4, 0)
+    Glib::RefPtr<Gtk::EventControllerKey> _vimKeyController;
+    GtkIMContext* _vimIMContext{nullptr};
+    gulong _vimNotifyCommandTextHandler{0};
+    gulong _vimNotifyCommandBarTextHandler{0};
+    gulong _vimWriteHandler{0};
+#endif
 
 private:
 #ifdef MD_AUTO_REPLACEMENT
@@ -175,4 +208,5 @@ private:
     CtColumnEdit _columnEdit;
     guint32      _todoRotateTime{0};
     std::string  _syntaxHighlighting;
+    bool         _vimModeEnabled{false};
 };

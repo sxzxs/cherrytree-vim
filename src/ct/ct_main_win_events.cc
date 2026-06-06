@@ -24,6 +24,19 @@
 #include "ct_main_win.h"
 #include "ct_actions.h"
 #include "ct_list.h"
+#if GTKMM_MAJOR_VERSION >= 4 || defined(GTKMM_DISABLE_DEPRECATED)
+#include <gdkmm/contentprovider.h>
+#include <glibmm/value.h>
+#endif
+
+#if GTKMM_MAJOR_VERSION >= 4
+namespace {
+bool ct_gtk4_has_modifier(Gdk::ModifierType state, Gdk::ModifierType modifier)
+{
+    return (state & modifier) != Gdk::ModifierType::NO_MODIFIER_MASK;
+}
+}
+#endif
 
 void CtMainWin::_on_treeview_cursor_changed()
 {
@@ -162,9 +175,7 @@ void CtMainWin::_on_treeview_event_after(GdkEvent* event)
     }
 }
 
-#if GTKMM_MAJOR_VERSION >= 4
-// GTK4: treeview event-after moved to controllers; no legacy handler
-#endif
+#endif /* GTKMM_MAJOR_VERSION < 4 */
 
 void CtMainWin::_on_treeview_row_activated(const Gtk::TreeModel::Path& path, Gtk::TreeViewColumn*)
 {
@@ -209,7 +220,8 @@ void CtMainWin::_treeview_restore_expanded_descendants(const Gtk::TreeModel::ite
         return;
     }
     const CtTreeModelColumns& columns = _uCtTreestore->get_columns();
-    const Gtk::TreeNodeChildren children = iter->children();
+    Gtk::TreeModel::iterator mutable_iter = iter;
+    Gtk::TreeNodeChildren children = mutable_iter->children();
     for (auto child_iter = children.begin(); child_iter != children.end(); ++child_iter) {
         const gint64 node_id = child_iter->get_value(columns.colNodeUniqueId);
         if (_treeExpandedNodeIds.count(node_id) > 0) {
@@ -234,6 +246,7 @@ bool CtMainWin::_on_treeview_test_collapse_row(const Gtk::TreeModel::iterator&,c
     return false;
 }
 
+#if GTKMM_MAJOR_VERSION < 4
 bool CtMainWin::_on_treeview_key_press_event(GdkEventKey* event)
 {
     if (not curr_tree_iter()) return false;
@@ -349,6 +362,537 @@ bool CtMainWin::_on_treeview_scroll_event(GdkEventScroll* event)
     return true;
 }
 #endif /* GTKMM_MAJOR_VERSION < 4 */
+
+#if GTKMM_MAJOR_VERSION >= 4
+void CtMainWin::_setup_treeview_interaction_gtk4()
+{
+    auto treeRightClick = Gtk::GestureClick::create();
+    treeRightClick->set_button(3);
+    treeRightClick->set_propagation_phase(Gtk::PropagationPhase::CAPTURE);
+    auto* pTreeRightClick = treeRightClick.get();
+    treeRightClick->signal_pressed().connect([this, pTreeRightClick](int, double x, double y) {
+        Gtk::TreePath path_at_click;
+        int bx = 0;
+        int by = 0;
+        _uCtTreeview->convert_widget_to_bin_window_coords(static_cast<int>(x), static_cast<int>(y), bx, by);
+        if (_uCtTreeview->get_path_at_pos(bx, by, path_at_click)) {
+            _uCtTreeview->set_cursor(path_at_click);
+        }
+        _uCtMenu->popup_menu_at_widget4(CtMenu::POPUP_MENU_TYPE::Node, *_uCtTreeview, x, y);
+        pTreeRightClick->set_state(Gtk::EventSequenceState::CLAIMED);
+    });
+    _uCtTreeview->add_controller(treeRightClick);
+
+    _treeClickController4 = Gtk::GestureClick::create();
+    _treeClickController4->set_button(0);
+    _treeClickController4->signal_pressed().connect(sigc::mem_fun(*this, &CtMainWin::_on_treeview_button_pressed_gtk4));
+    _uCtTreeview->add_controller(_treeClickController4);
+
+    _treeKeyController4 = Gtk::EventControllerKey::create();
+    _treeKeyController4->signal_key_pressed().connect(sigc::mem_fun(*this, &CtMainWin::_on_treeview_key_pressed_gtk4), false);
+    _uCtTreeview->add_controller(_treeKeyController4);
+
+    _treeScrollController4 = Gtk::EventControllerScroll::create();
+    _treeScrollController4->set_flags(Gtk::EventControllerScroll::Flags::VERTICAL);
+    _treeScrollController4->signal_scroll().connect(sigc::mem_fun(*this, &CtMainWin::_on_treeview_scroll_gtk4), false);
+    _uCtTreeview->add_controller(_treeScrollController4);
+}
+
+void CtMainWin::_on_treeview_button_pressed_gtk4(int n_press, double x, double y)
+{
+    if (not _treeClickController4) {
+        return;
+    }
+    const unsigned int button = _treeClickController4->get_current_button();
+
+    Gtk::TreePath path_at_click;
+    int bx = 0;
+    int by = 0;
+    _uCtTreeview->convert_widget_to_bin_window_coords(static_cast<int>(x), static_cast<int>(y), bx, by);
+    const bool has_path = _uCtTreeview->get_path_at_pos(bx, by, path_at_click);
+
+    if (button == 3) {
+        return;
+    }
+
+    if (button == 1) {
+        if (_pCtConfig->treeClickFocusText) {
+            _ctTextview.mm().grab_focus();
+        }
+        if (_pCtConfig->treeClickExpand and has_path) {
+            if (n_press == 2 and path_at_click == get_tree_store().get_path(curr_tree_iter())) {
+                if (_uCtTreeview->row_expanded(path_at_click)) {
+                    _uCtTreeview->collapse_row(path_at_click);
+                }
+                else {
+                    _uCtTreeview->expand_row(path_at_click, false);
+                }
+            }
+            else if (n_press == 1 and not _uCtTreeview->row_expanded(path_at_click)) {
+                _tree_just_auto_expanded = true;
+                _uCtTreeview->expand_row(path_at_click, false);
+            }
+        }
+        return;
+    }
+
+    if (button == 2 and curr_tree_iter()) {
+        auto path = get_tree_store().get_path(curr_tree_iter());
+        if (_uCtTreeview->row_expanded(path)) {
+            _uCtTreeview->collapse_row(path);
+        }
+        else {
+            _uCtTreeview->expand_row(path, true);
+        }
+    }
+}
+
+bool CtMainWin::_on_treeview_key_pressed_gtk4(guint keyval, guint /*keycode*/, Gdk::ModifierType state)
+{
+    if (not curr_tree_iter()) return false;
+    const bool alt = ct_gtk4_has_modifier(state, Gdk::ModifierType::ALT_MASK);
+    const bool ctrl = ct_gtk4_has_modifier(state, Gdk::ModifierType::CONTROL_MASK);
+
+    if (alt) {
+    }
+    else if (ctrl) {
+        auto reduce = [](Gtk::TreeModel::iterator first, std::function<Gtk::TreeModel::iterator(Gtk::TreeModel::iterator)> operatr)->Gtk::TreeModel::iterator{
+            Gtk::TreeModel::iterator result;
+            for (auto next = operatr(first); next; next = operatr(next)) {
+                result = next;
+            }
+            return result;
+        };
+        if (GDK_KEY_Up == keyval) {
+            auto fist_sibling = reduce(curr_tree_iter(), [](Gtk::TreeModel::iterator iter) { return --iter;});
+            if (fist_sibling) {
+                get_tree_view().set_cursor_safe(fist_sibling);
+            }
+            return true;
+        }
+        if (GDK_KEY_Down == keyval) {
+            auto last_sibling = reduce(curr_tree_iter(), [](Gtk::TreeModel::iterator iter) { return ++iter;});
+            if (last_sibling) {
+                get_tree_view().set_cursor_safe(last_sibling);
+            }
+            return true;
+        }
+        if (GDK_KEY_Left == keyval) {
+            auto fist_parent = reduce(curr_tree_iter(), [](Gtk::TreeModel::iterator iter) { return iter->parent();});
+            if (fist_parent) {
+                get_tree_view().set_cursor_safe(fist_parent);
+            }
+            return true;
+        }
+        if (GDK_KEY_Right == keyval) {
+            auto last_child = reduce(curr_tree_iter(), [](Gtk::TreeModel::iterator iter) { return iter->children().begin();});
+            if (last_child) {
+                get_tree_view().set_cursor_safe(last_child);
+            }
+            return true;
+        }
+        if (GDK_KEY_plus == keyval or GDK_KEY_KP_Add == keyval or GDK_KEY_equal == keyval) {
+            _zoom_tree(true);
+            return true;
+        }
+        if (GDK_KEY_minus == keyval or GDK_KEY_KP_Subtract == keyval) {
+            _zoom_tree(false);
+            return true;
+        }
+        if (GDK_KEY_0 == keyval or GDK_KEY_KP_0 == keyval) {
+            _zoom_tree(std::nullopt);
+            return true;
+        }
+        if (GDK_KEY_Tab == keyval or GDK_KEY_ISO_Left_Tab == keyval) {
+            _uCtActions->toggle_focus_tree_text();
+            return true;
+        }
+    }
+    else {
+        if (GDK_KEY_Left == keyval) {
+            if (_uCtTreeview->row_expanded(_uCtTreestore->get_path(curr_tree_iter()))) {
+                _uCtTreeview->collapse_row(_uCtTreestore->get_path(curr_tree_iter()));
+            }
+            else if (curr_tree_iter().parent()) {
+                get_tree_view().set_cursor_safe(curr_tree_iter().parent());
+            }
+            return true;
+        }
+        if (GDK_KEY_Right == keyval) {
+            get_tree_view().expand_row(get_tree_store().get_path(curr_tree_iter()), false);
+            return true;
+        }
+        if (GDK_KEY_Return == keyval or GDK_KEY_KP_Enter == keyval) {
+            auto p = get_tree_store().get_path(curr_tree_iter());
+            if (_uCtTreeview->row_expanded(p)) {
+                _uCtTreeview->collapse_row(p);
+            }
+            else {
+                _uCtTreeview->expand_row(p, false);
+            }
+            return true;
+        }
+        if (GDK_KEY_Menu == keyval) {
+            _uCtMenu->popup_menu_at_widget4(CtMenu::POPUP_MENU_TYPE::Node, *_uCtTreeview, 0, 0);
+            return true;
+        }
+        if (GDK_KEY_Tab == keyval or GDK_KEY_ISO_Left_Tab == keyval) {
+            _uCtActions->toggle_focus_tree_text();
+            return true;
+        }
+        if (GDK_KEY_Delete == keyval) {
+            _uCtActions->node_delete();
+            return true;
+        }
+        {
+            const gunichar unicode_char = gdk_keyval_to_unicode(keyval);
+            if (unicode_char != 0 and g_unichar_isalnum(unicode_char)) {
+                Glib::ustring entryStr{1, unicode_char};
+                _uCtActions->command_selnode_str(entryStr);
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+bool CtMainWin::_on_treeview_scroll_gtk4(double /*dx*/, double dy)
+{
+    const Gdk::ModifierType state = _treeScrollController4 ?
+        _treeScrollController4->get_current_event_state() :
+        Gdk::ModifierType::NO_MODIFIER_MASK;
+    if (not ct_gtk4_has_modifier(state, Gdk::ModifierType::CONTROL_MASK)) {
+        return false;
+    }
+    if (dy != 0) {
+        _zoom_tree(dy > 0);
+    }
+    return true;
+}
+
+void CtMainWin::_setup_textview_interaction_gtk4()
+{
+    auto& textView = _ctTextview.mm();
+
+    auto textRightClick = Gtk::GestureClick::create();
+    textRightClick->set_button(3);
+    textRightClick->set_propagation_phase(Gtk::PropagationPhase::CAPTURE);
+    auto* pTextRightClick = textRightClick.get();
+    textRightClick->signal_pressed().connect([this, pTextRightClick](int, double x, double y) {
+        if (_show_textview_context_menu_gtk4(x, y)) {
+            pTextRightClick->set_state(Gtk::EventSequenceState::CLAIMED);
+        }
+    });
+    textView.add_controller(textRightClick);
+
+    _textClickController4 = Gtk::GestureClick::create();
+    _textClickController4->set_button(0);
+    _textClickController4->signal_pressed().connect(sigc::mem_fun(*this, &CtMainWin::_on_textview_button_pressed_gtk4));
+    textView.add_controller(_textClickController4);
+
+    _textKeyController4 = Gtk::EventControllerKey::create();
+    _textKeyController4->signal_key_pressed().connect(sigc::mem_fun(*this, &CtMainWin::_on_textview_key_pressed_gtk4), false);
+    textView.add_controller(_textKeyController4);
+
+    _textScrollController4 = Gtk::EventControllerScroll::create();
+    _textScrollController4->set_flags(Gtk::EventControllerScroll::Flags::VERTICAL);
+    _textScrollController4->signal_scroll().connect(sigc::mem_fun(*this, &CtMainWin::_on_textview_scroll_gtk4), false);
+    textView.add_controller(_textScrollController4);
+
+    _textMotionController4 = Gtk::EventControllerMotion::create();
+    _textMotionController4->signal_motion().connect(sigc::mem_fun(*this, &CtMainWin::_on_textview_motion_gtk4));
+    textView.add_controller(_textMotionController4);
+}
+
+void CtMainWin::_on_textview_button_pressed_gtk4(int n_press, double x, double y)
+{
+    if (not _textClickController4) {
+        return;
+    }
+
+    const guint button = _textClickController4->get_current_button();
+    const guint32 event_time = gtk_event_controller_get_current_event_time(GTK_EVENT_CONTROLLER(_textClickController4->gobj()));
+    if (button == 3) {
+        return;
+    }
+
+    if (button != 1 and button != 2) {
+        return;
+    }
+
+    Glib::signal_idle().connect_once([this, n_press, x, y, button, event_time]() {
+        if (not curr_tree_iter()) {
+            return;
+        }
+        if (n_press == 2) {
+            _ctTextview.for_event_after_double_click_button12_gtk4(x, y, button);
+        }
+        else if (n_press == 3) {
+            _ctTextview.for_event_after_triple_click_button12_gtk4(x, y, event_time);
+        }
+        else {
+            _ctTextview.for_event_after_button_press_gtk4(x, y, button, event_time);
+        }
+    });
+}
+
+bool CtMainWin::_on_textview_key_pressed_gtk4(guint keyval, guint /*keycode*/, Gdk::ModifierType state)
+{
+    CtTreeIter tree_iter = curr_tree_iter();
+    auto buffer = curr_buffer();
+    if (not tree_iter or not buffer) {
+        return false;
+    }
+
+    const bool shift_down = ct_gtk4_has_modifier(state, Gdk::ModifierType::SHIFT_MASK);
+    const bool ctrl_down = ct_gtk4_has_modifier(state, Gdk::ModifierType::CONTROL_MASK);
+    const bool alt_down = ct_gtk4_has_modifier(state, Gdk::ModifierType::ALT_MASK);
+
+    if (GDK_KEY_Menu == keyval) {
+        return _show_textview_context_menu_at_cursor_gtk4();
+    }
+
+    if (GDK_KEY_Return == keyval or GDK_KEY_KP_Enter == keyval) {
+        auto iter_insert = buffer->get_insert()->get_iter();
+        if (iter_insert) {
+            cursor_key_press() = iter_insert.get_offset();
+        }
+        else {
+            cursor_key_press() = -1;
+        }
+    }
+    else if ((GDK_KEY_Tab == keyval or GDK_KEY_ISO_Left_Tab == keyval) and not ctrl_down) {
+        const bool level_increase = not shift_down and keyval != GDK_KEY_ISO_Left_Tab;
+        if (not buffer->get_has_selection()) {
+            auto iter_insert = buffer->get_insert()->get_iter();
+            CtListInfo list_info = CtList{_pCtConfig, buffer}.get_paragraph_list_info(iter_insert);
+            if (list_info) {
+                if (level_increase or list_info.level) {
+                    _ctTextview.list_change_level(iter_insert, list_info, level_increase);
+                    return true;
+                }
+                return false;
+            }
+        }
+        else if (tree_iter.get_node_syntax_highlighting() == CtConst::RICH_TEXT_ID) {
+            Gtk::TextIter iter_sel_start, iter_sel_end;
+            buffer->get_selection_bounds(iter_sel_start, iter_sel_end);
+            const int num_chars = iter_sel_end.get_offset() - iter_sel_start.get_offset();
+            if (num_chars != 1) {
+                return false;
+            }
+            auto widgets = tree_iter.get_anchored_widgets(iter_sel_start.get_offset(), iter_sel_start.get_offset());
+            if (widgets.empty()) {
+                return false;
+            }
+            if (dynamic_cast<CtTableCommon*>(widgets.front())) {
+                buffer->place_cursor(iter_sel_end);
+                _ctTextview.mm().grab_focus();
+                return true;
+            }
+            return false;
+        }
+    }
+
+    if (ctrl_down) {
+        if (GDK_KEY_Tab == keyval or GDK_KEY_ISO_Left_Tab == keyval) {
+            _uCtActions->toggle_focus_tree_text();
+            return true;
+        }
+        if (not alt_down and GDK_KEY_space == keyval) {
+            if (_try_move_focus_to_anchored_widget_if_on_it()) {
+                return true;
+            }
+            auto iter_insert = buffer->get_insert()->get_iter();
+            CtListInfo list_info = CtList{_pCtConfig, buffer}.get_paragraph_list_info(iter_insert);
+            if (list_info and list_info.type == CtListType::Todo) {
+                if (_uCtActions->_is_curr_node_not_read_only_or_error()) {
+                    auto iter_start_list = buffer->get_iter_at_offset(list_info.startoffs + 3*list_info.level);
+                    CtList{_pCtConfig, buffer}.todo_list_rotate_status(iter_start_list);
+                    return true;
+                }
+            }
+        }
+        if (GDK_KEY_plus == keyval or GDK_KEY_KP_Add == keyval or GDK_KEY_equal == keyval) {
+            _ctTextview.zoom_text(true, tree_iter.get_node_syntax_highlighting());
+            return true;
+        }
+        if (GDK_KEY_minus == keyval or GDK_KEY_KP_Subtract == keyval) {
+            _ctTextview.zoom_text(false, tree_iter.get_node_syntax_highlighting());
+            return true;
+        }
+        if (GDK_KEY_0 == keyval or GDK_KEY_KP_0 == keyval) {
+            _ctTextview.zoom_text(std::nullopt, tree_iter.get_node_syntax_highlighting());
+            return true;
+        }
+    }
+
+    if (GDK_KEY_quotedbl == keyval or
+        GDK_KEY_apostrophe == keyval or
+        GDK_KEY_Return == keyval or
+        GDK_KEY_KP_Enter == keyval or
+        GDK_KEY_space == keyval)
+    {
+        const gint64 node_id = tree_iter.get_node_id();
+        const Glib::ustring syntax_highlighting = tree_iter.get_node_syntax_highlighting();
+        Glib::signal_idle().connect_once([this, keyval, state, node_id, syntax_highlighting]() {
+            CtTreeIter current_iter = curr_tree_iter();
+            if (not current_iter or current_iter.get_node_id() != node_id) {
+                return;
+            }
+            _ctTextview.for_event_after_key_press_gtk4(keyval, state, syntax_highlighting);
+            if ((GDK_KEY_Return == keyval or GDK_KEY_KP_Enter == keyval or GDK_KEY_space == keyval) and _pCtConfig->wordCountOn) {
+                update_selected_node_statusbar_info();
+            }
+        });
+    }
+    return false;
+}
+
+bool CtMainWin::_on_textview_scroll_gtk4(double /*dx*/, double dy)
+{
+    const Gdk::ModifierType state = _textScrollController4 ?
+        _textScrollController4->get_current_event_state() :
+        Gdk::ModifierType::NO_MODIFIER_MASK;
+    if (not ct_gtk4_has_modifier(state, Gdk::ModifierType::CONTROL_MASK)) {
+        return false;
+    }
+    if (dy != 0 and curr_tree_iter()) {
+        _ctTextview.zoom_text(dy > 0, curr_tree_iter().get_node_syntax_highlighting());
+    }
+    return true;
+}
+
+void CtMainWin::_on_textview_motion_gtk4(double x, double y)
+{
+    if (not user_active() or not curr_tree_iter()) {
+        return;
+    }
+    int bx = 0;
+    int by = 0;
+    _ctTextview.mm().window_to_buffer_coords(Gtk::TextWindowType::WIDGET,
+                                             static_cast<int>(x),
+                                             static_cast<int>(y),
+                                             bx,
+                                             by);
+    _ctTextview.cursor_and_tooltips_handler(bx, by);
+}
+
+bool CtMainWin::_show_textview_context_menu_gtk4(double x, double y)
+{
+    CtTreeIter tree_iter = curr_tree_iter();
+    if (not tree_iter) {
+        return false;
+    }
+    auto buffer = curr_buffer();
+    if (not buffer) {
+        return false;
+    }
+
+    int bx = 0;
+    int by = 0;
+    _ctTextview.mm().window_to_buffer_coords(Gtk::TextWindowType::WIDGET,
+                                             static_cast<int>(x),
+                                             static_cast<int>(y),
+                                             bx,
+                                             by);
+    _ctTextview.cursor_and_tooltips_handler(bx, by);
+
+    Gtk::TextIter clicked_iter;
+    if (not buffer->get_has_selection() and _ctTextview.mm().get_iter_at_location(clicked_iter, bx, by)) {
+        buffer->place_cursor(clicked_iter);
+    }
+
+    CtMenu::POPUP_MENU_TYPE popup_type = CtMenu::POPUP_MENU_TYPE::Code;
+    if (tree_iter.get_node_syntax_highlighting() == CtConst::RICH_TEXT_ID) {
+        if (hovering_link_iter_offset() >= 0) {
+            Gtk::TextIter target_iter = buffer->get_iter_at_offset(hovering_link_iter_offset());
+            if (target_iter) {
+                bool do_set_cursor = true;
+                if (buffer->get_has_selection()) {
+                    Gtk::TextIter iter_sel_start, iter_sel_end;
+                    buffer->get_selection_bounds(iter_sel_start, iter_sel_end);
+                    if (hovering_link_iter_offset() >= iter_sel_start.get_offset() and
+                        hovering_link_iter_offset() <= iter_sel_end.get_offset()) {
+                        do_set_cursor = false;
+                    }
+                }
+                if (do_set_cursor) {
+                    buffer->place_cursor(target_iter);
+                }
+            }
+            popup_type = CtMenu::POPUP_MENU_TYPE::Link;
+        }
+        else {
+            popup_type = CtMenu::POPUP_MENU_TYPE::Text;
+        }
+    }
+
+    _uCtMenu->popup_menu_at_widget4(popup_type, _ctTextview.mm(), x, y);
+    return true;
+}
+
+bool CtMainWin::_show_textview_context_menu_at_cursor_gtk4()
+{
+    CtTreeIter tree_iter = curr_tree_iter();
+    if (not tree_iter) {
+        return false;
+    }
+    auto buffer = curr_buffer();
+    if (not buffer) {
+        return false;
+    }
+
+    Gtk::TextIter iter_insert = buffer->get_insert()->get_iter();
+    Gdk::Rectangle strong;
+    Gdk::Rectangle weak;
+    _ctTextview.mm().get_cursor_locations(iter_insert, strong, weak);
+    int x = 0;
+    int y = 0;
+    _ctTextview.mm().buffer_to_window_coords(Gtk::TextWindowType::WIDGET,
+                                             strong.get_x(),
+                                             strong.get_y() + strong.get_height(),
+                                             x,
+                                             y);
+
+    if (tree_iter.get_node_syntax_highlighting() == CtConst::RICH_TEXT_ID and buffer->get_has_selection()) {
+        Gtk::TextIter iter_sel_start, iter_sel_end;
+        buffer->get_selection_bounds(iter_sel_start, iter_sel_end);
+        const int num_chars = iter_sel_end.get_offset() - iter_sel_start.get_offset();
+        if (num_chars == 1) {
+            auto widgets = tree_iter.get_anchored_widgets(iter_sel_start.get_offset(), iter_sel_start.get_offset());
+            if (not widgets.empty()) {
+                if (auto* anchor = dynamic_cast<CtImageAnchor*>(widgets.front())) {
+                    _uCtActions->curr_anchor_anchor = anchor;
+                    _uCtActions->object_set_selection(anchor);
+                    _uCtMenu->popup_menu_at_widget4(CtMenu::POPUP_MENU_TYPE::Anchor, _ctTextview.mm(), x, y);
+                    return true;
+                }
+                if (auto* image = dynamic_cast<CtImagePng*>(widgets.front())) {
+                    _uCtActions->curr_image_anchor = image;
+                    _uCtActions->object_set_selection(image);
+                    _uCtMenu->popup_menu_at_widget4(CtMenu::POPUP_MENU_TYPE::Image, _ctTextview.mm(), x, y);
+                    return true;
+                }
+                if (auto* latex = dynamic_cast<CtImageLatex*>(widgets.front())) {
+                    _uCtActions->curr_latex_anchor = latex;
+                    _uCtActions->object_set_selection(latex);
+                    _uCtMenu->popup_menu_at_widget4(CtMenu::POPUP_MENU_TYPE::Latex, _ctTextview.mm(), x, y);
+                    return true;
+                }
+                if (auto* embfile = dynamic_cast<CtImageEmbFile*>(widgets.front())) {
+                    _uCtActions->curr_file_anchor = embfile;
+                    _uCtActions->object_set_selection(embfile);
+                    _uCtMenu->popup_menu_at_widget4(CtMenu::POPUP_MENU_TYPE::EmbFile, _ctTextview.mm(), x, y);
+                    return true;
+                }
+            }
+        }
+    }
+
+    return _show_textview_context_menu_gtk4(x, y);
+}
+#endif /* GTKMM_MAJOR_VERSION >= 4 */
 
 // Extend the Default Right-Click Menu
 #if GTKMM_MAJOR_VERSION < 4
@@ -738,13 +1282,13 @@ void CtMainWin::_on_treeview_drag_data_get(const Glib::RefPtr<Gdk::DragContext>&
     }
 }
 #else
-// GTK4 stubs for future TreeView Drag & Drop migration
+// GTK4 Drag & Drop for TreeView
 void CtMainWin::_setup_treeview_drag_and_drop_gtk4()
 {
     // DragSource for moving nodes within tree
     _treeDragSource4 = Gtk::DragSource::create();
     _treeDragSource4->set_actions(Gdk::DragAction::MOVE);
-    _treeDragSource4->signal_drag_begin().connect(sigc::mem_fun(*this, &CtMainWin::_on_treeview_drag_source_prepare_gtk4));
+    _treeDragSource4->signal_prepare().connect(sigc::mem_fun(*this, &CtMainWin::_on_treeview_drag_source_prepare_gtk4), false);
     _uCtTreeview->add_controller(_treeDragSource4);
 
     // DropTarget for receiving node path strings
@@ -753,14 +1297,70 @@ void CtMainWin::_setup_treeview_drag_and_drop_gtk4()
     _uCtTreeview->add_controller(_treeDropTarget4);
 }
 
-void CtMainWin::_on_treeview_drag_source_prepare_gtk4(const Glib::RefPtr<Gdk::Drag>& /*drag*/)
+Glib::RefPtr<Gdk::ContentProvider> CtMainWin::_on_treeview_drag_source_prepare_gtk4(double /*x*/, double /*y*/)
 {
-    // Placeholder: selection path will be provided via content provider in future implementation
+    Gtk::TreeModel::iterator sel_iter = _uCtTreeview->get_selection()->get_selected();
+    if (!sel_iter) {
+        return {};
+    }
+    const Glib::ustring treePathStr = _uCtTreeview->get_model()->get_path(sel_iter).to_string();
+    if (treePathStr.empty()) {
+        return {};
+    }
+    Glib::Value<Glib::ustring> value;
+    value.init(Glib::Value<Glib::ustring>::value_type());
+    value.set(treePathStr);
+    return Gdk::ContentProvider::create(value);
 }
 
-bool CtMainWin::_on_treeview_drop_target_drop_gtk4(const Glib::ValueBase& /*value*/, double /*x*/, double /*y*/)
+bool CtMainWin::_on_treeview_drop_target_drop_gtk4(const Glib::ValueBase& value, double x, double y)
 {
-    // Placeholder: implement node move logic using path string extracted from value
-    return false;
+    if (!G_VALUE_HOLDS(value.gobj(), G_TYPE_STRING)) {
+        return false;
+    }
+    const gchar* treePathSrcCstr = g_value_get_string(value.gobj());
+    if (!treePathSrcCstr or !*treePathSrcCstr) {
+        return false;
+    }
+
+    Gtk::TreePath treePathDest;
+    Gtk::TreeView::DropPosition treeDropPos{Gtk::TreeView::DropPosition::BEFORE};
+    if (not _uCtTreeview->get_dest_row_at_pos(static_cast<int>(x), static_cast<int>(y), treePathDest, treeDropPos)) {
+        return false;
+    }
+
+    Gtk::TreePath treePathSrc{treePathSrcCstr};
+    if (treePathDest == treePathSrc) {
+        return false;
+    }
+    CtTreeIter drag_iter = _uCtTreestore->get_iter(treePathSrc);
+    if (not drag_iter) {
+        return false;
+    }
+    CtTreeIter drop_iter = _uCtTreestore->get_iter(treePathDest);
+    if (not drop_iter) {
+        return false;
+    }
+    CtTreeIter move_towards_top_iter = drop_iter.parent();
+    while (move_towards_top_iter) {
+        if (move_towards_top_iter == drag_iter) {
+            CtDialogs::error_dialog(_("The new parent can't be one of his children!"), *this);
+            return false;
+        }
+        move_towards_top_iter = move_towards_top_iter.parent();
+    }
+
+    if (treeDropPos == Gtk::TreeView::DropPosition::BEFORE) {
+        auto prev_iter = drop_iter;
+        --prev_iter;
+        _uCtActions->node_move_after(drag_iter, drop_iter.parent(), prev_iter, true/*set_first*/);
+    }
+    else if (treeDropPos == Gtk::TreeView::DropPosition::AFTER) {
+        _uCtActions->node_move_after(drag_iter, drop_iter.parent(), drop_iter);
+    }
+    else {
+        _uCtActions->node_move_after(drag_iter, drop_iter);
+    }
+    return true;
 }
 #endif

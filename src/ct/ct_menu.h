@@ -131,9 +131,26 @@ public:
     Gtk::PopoverMenuBar*       build_popover_menubar4();
     void                       update_bookmarks_gio_menu4(const std::list<std::tuple<gint64, Glib::ustring, const char*>>& bookmarks);
     void                       update_recent_docs_gio_menu4(const CtRecentDocsFilepaths& recentDocsFilepaths);
+    Glib::RefPtr<Gio::Menu>    build_popup_menu_model4(POPUP_MENU_TYPE popupMenuType);
+    Glib::RefPtr<Gio::Menu>    build_popup_menu_table_cell_model4(const bool first_row, const bool first_col, const bool last_row, const bool last_col);
+    void                       popup_menu_at_widget4(POPUP_MENU_TYPE popupMenuType, Gtk::Widget& parent, double x, double y);
+    void                       popup_menu_table_cell_at_widget4(Gtk::Widget& parent,
+                                                                double x,
+                                                                double y,
+                                                                const bool first_row,
+                                                                const bool first_col,
+                                                                const bool last_row,
+                                                                const bool last_col);
 private:
     Gtk::Popover*              _build_actions_popover();
+    Gtk::Box*                  _build_popup_menu_box4(POPUP_MENU_TYPE popupMenuType, Gtk::Popover* rootPopover);
+    Gtk::Box*                  _build_popup_menu_table_cell_box4(Gtk::Popover* rootPopover,
+                                                                 const bool first_row,
+                                                                 const bool first_col,
+                                                                 const bool last_row,
+                                                                 const bool last_col);
     Glib::RefPtr<Gio::Menu>    _build_gio_menu4();
+    Glib::RefPtr<Gio::Menu>    _build_popup_menu_model_from_xml4(const char* document, const char* xpath);
     // Dynamic Gio::Menu sections updated at runtime
     Glib::RefPtr<Gio::Menu>    _pGioMenuBar4;
     Glib::RefPtr<Gio::Menu>    _pGioBookmarksMenu4;      // top-level Bookmarks menu

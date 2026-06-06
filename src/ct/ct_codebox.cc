@@ -85,6 +85,83 @@ CtTextCell::CtTextCell(CtMainWin* pCtMainWin,
         return false;
     });
     // Scroll-event zoom handler disabled for cross-version build stability
+#else
+    auto click = Gtk::GestureClick::create();
+    click->set_button(0);
+    click->signal_pressed().connect([pCtMainWin, this, click](int n_press, double x, double y) {
+        if (not pCtMainWin->user_active()) {
+            return;
+        }
+        const guint button = click->get_current_button();
+        if (button != 1 and button != 2 and button != 3) {
+            return;
+        }
+        const guint32 event_time = gtk_event_controller_get_current_event_time(GTK_EVENT_CONTROLLER(click->gobj()));
+        Glib::signal_idle().connect_once([pCtMainWin, this, n_press, x, y, button, event_time]() {
+            if (not pCtMainWin->curr_tree_iter()) {
+                return;
+            }
+            if (button == 3) {
+                _ctTextview.for_event_after_button_press_gtk4(x, y, button, event_time);
+            }
+            else if (n_press == 2) {
+                _ctTextview.for_event_after_double_click_button12_gtk4(x, y, button);
+            }
+            else if (n_press == 3) {
+                _ctTextview.for_event_after_triple_click_button12_gtk4(x, y, event_time);
+            }
+            else {
+                _ctTextview.for_event_after_button_press_gtk4(x, y, button, event_time);
+            }
+        });
+    });
+    _ctTextview.mm().add_controller(click);
+
+    auto key = Gtk::EventControllerKey::create();
+    key->signal_key_pressed().connect([pCtMainWin, this](guint keyval, guint, Gdk::ModifierType state) -> bool {
+        if (not pCtMainWin->user_active()) {
+            return false;
+        }
+        if (GDK_KEY_Return == keyval or GDK_KEY_KP_Enter == keyval) {
+            auto iter_insert = _ctTextview.get_buffer()->get_insert()->get_iter();
+            pCtMainWin->cursor_key_press() = iter_insert ? iter_insert.get_offset() : -1;
+        }
+        if (GDK_KEY_quotedbl == keyval or
+            GDK_KEY_apostrophe == keyval or
+            GDK_KEY_Return == keyval or
+            GDK_KEY_KP_Enter == keyval or
+            GDK_KEY_space == keyval)
+        {
+            const CtTreeIter tree_iter = pCtMainWin->curr_tree_iter();
+            const gint64 node_id = tree_iter ? tree_iter.get_node_id() : -1;
+            const Glib::ustring syntax_highlighting = _syntaxHighlighting;
+            Glib::signal_idle().connect_once([pCtMainWin, this, keyval, state, node_id, syntax_highlighting]() {
+                const CtTreeIter current_iter = pCtMainWin->curr_tree_iter();
+                if (not current_iter or current_iter.get_node_id() != node_id) {
+                    return;
+                }
+                _ctTextview.for_event_after_key_press_gtk4(keyval, state, syntax_highlighting);
+            });
+        }
+        return false;
+    }, false);
+    _ctTextview.mm().add_controller(key);
+
+    auto motion = Gtk::EventControllerMotion::create();
+    motion->signal_motion().connect([pCtMainWin, this](double x, double y) {
+        if (not pCtMainWin->user_active()) {
+            return;
+        }
+        int bx = 0;
+        int by = 0;
+        _ctTextview.mm().window_to_buffer_coords(Gtk::TextWindowType::WIDGET,
+                                                 static_cast<int>(x),
+                                                 static_cast<int>(y),
+                                                 bx,
+                                                 by);
+        _ctTextview.cursor_and_tooltips_handler(bx, by);
+    });
+    _ctTextview.mm().add_controller(motion);
 #endif
 }
 
@@ -138,6 +215,15 @@ CtCodebox::CtCodebox(CtMainWin* pCtMainWin,
 #if GTKMM_MAJOR_VERSION >= 4
     _scrolledwindow.set_child(_ctTextview.mm());
     _hbox.append(_scrolledwindow);
+    _toolbar4.get_style_context()->add_class("ct-cboxtoolbar");
+    _toolButtonPlay4.set_icon_name("ct_play");
+    _toolButtonCopy4.set_icon_name("ct_edit_copy");
+    _toolButtonProp4.set_icon_name("ct_codebox_edit");
+    _toolbar4.append(_toolButtonPlay4);
+    _toolbar4.append(_toolButtonCopy4);
+    _toolbar4.append(_toolButtonProp4);
+    _hbox.append(_toolbar4);
+    update_toolbar_buttons();
 #else
     _scrolledwindow.add(_ctTextview.mm());
     _hbox.pack_start(_scrolledwindow, true/*expand*/, true/*fill*/);
@@ -190,6 +276,45 @@ CtCodebox::CtCodebox(CtMainWin* pCtMainWin,
         }
         return false;
     });
+#else
+    auto click = Gtk::GestureClick::create();
+    click->set_button(0);
+    click->set_propagation_phase(Gtk::PropagationPhase::CAPTURE);
+    click->signal_pressed().connect([this, click](int n_press, double x, double y) {
+        if (not _pCtMainWin->user_active()) return;
+        _pCtMainWin->get_ct_actions()->curr_codebox_anchor = this;
+        if (click->get_current_button() == 3) {
+            _pCtMainWin->get_ct_actions()->object_set_selection(this);
+            _pCtMainWin->get_ct_menu().popup_menu_at_widget4(CtMenu::POPUP_MENU_TYPE::Codebox, _ctTextview.mm(), x, y);
+            click->set_state(Gtk::EventSequenceState::CLAIMED);
+        }
+        else if (n_press != 3) {
+            _pCtMainWin->get_ct_actions()->object_set_selection(this);
+        }
+    });
+    _ctTextview.mm().add_controller(click);
+
+    auto key = Gtk::EventControllerKey::create();
+    key->signal_key_pressed().connect([this](guint keyval, guint, Gdk::ModifierType) -> bool {
+        if (not _pCtMainWin->user_active()) return false;
+        _pCtMainWin->get_ct_actions()->curr_codebox_anchor = this;
+        if (keyval != GDK_KEY_Menu) return false;
+        _pCtMainWin->get_ct_actions()->object_set_selection(this);
+        Gtk::TextIter iter_insert = _ctTextview.get_buffer()->get_insert()->get_iter();
+        Gdk::Rectangle strong;
+        Gdk::Rectangle weak;
+        _ctTextview.mm().get_cursor_locations(iter_insert, strong, weak);
+        int x = 0;
+        int y = 0;
+        _ctTextview.mm().buffer_to_window_coords(Gtk::TextWindowType::WIDGET,
+                                                 strong.get_x(),
+                                                 strong.get_y() + strong.get_height(),
+                                                 x,
+                                                 y);
+        _pCtMainWin->get_ct_menu().popup_menu_at_widget4(CtMenu::POPUP_MENU_TYPE::Codebox, _ctTextview.mm(), x, y);
+        return true;
+    }, false);
+    _ctTextview.mm().add_controller(key);
 #endif
     // Scroll adjustments for auto-resize
 #if GTKMM_MAJOR_VERSION >= 4
@@ -249,6 +374,27 @@ CtCodebox::CtCodebox(CtMainWin* pCtMainWin,
             spdlog::debug("codebox_props_idle exit");
         });
     });
+#else
+    _toolButtonPlay4.signal_clicked().connect([this](){
+        CtActions* pCtActions = _pCtMainWin->get_ct_actions();
+        pCtActions->curr_codebox_anchor = this;
+        pCtActions->object_set_selection(this);
+        pCtActions->exec_code_all();
+    });
+    _toolButtonCopy4.signal_clicked().connect([this](){
+        CtActions* pCtActions = _pCtMainWin->get_ct_actions();
+        pCtActions->curr_codebox_anchor = this;
+        pCtActions->object_set_selection(this);
+        pCtActions->codebox_copy_content();
+    });
+    _toolButtonProp4.signal_clicked().connect([this](){
+        CtActions* pCtActions = _pCtMainWin->get_ct_actions();
+        pCtActions->curr_codebox_anchor = this;
+        pCtActions->object_set_selection(this);
+        Glib::signal_idle().connect_once([pCtActions](){
+            pCtActions->codebox_change_properties();
+        });
+    });
 #endif
 }
 
@@ -292,7 +438,23 @@ void CtCodebox::update_toolbar_buttons()
         _toolbar.insert(_toolButtonProp, -1);
     }
 #else
-    // No-op for GTK4 build where toolbar API differs
+    _toolbar4.set_visible(_pCtConfig->codeboxWithToolbar);
+    _toolButtonCopy4.set_visible(_pCtConfig->codeboxWithToolbar);
+    _toolButtonProp4.set_visible(_pCtConfig->codeboxWithToolbar);
+
+    if (_pCtConfig->codeboxWithToolbar) {
+        _toolbar4.set_tooltip_text(_syntaxHighlighting);
+        if (CtConst::PLAIN_TEXT_ID != _syntaxHighlighting) {
+            const std::string label_n_tooltip = fmt::format("[{}] - {}", _syntaxHighlighting, _("Execute Code"));
+            _toolButtonPlay4.set_tooltip_text(label_n_tooltip);
+            _toolButtonPlay4.set_visible(true);
+        }
+        else {
+            _toolButtonPlay4.set_visible(false);
+        }
+        _toolButtonCopy4.set_tooltip_text(_("Copy Code"));
+        _toolButtonProp4.set_tooltip_text(_("Change CodeBox Properties"));
+    }
 #endif
 }
 

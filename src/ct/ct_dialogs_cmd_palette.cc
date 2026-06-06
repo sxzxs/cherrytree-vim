@@ -25,10 +25,34 @@
 #include "ct_main_win.h"
 #include "ct_logging.h"
 
+namespace {
+
 #if GTKMM_MAJOR_VERSION >= 4
-// GTK4 fallback: disable command palette dialog for now.
-std::string CtDialogs::dialog_palette(CtMainWin*) { return {}; }
-#else
+int _run_dialog_blocking(Gtk::Dialog& dialog)
+{
+    int response = Gtk::ResponseType::NONE;
+    auto loop = Glib::MainLoop::create(false);
+    dialog.signal_response().connect([&](int resp) {
+        response = resp;
+        dialog.hide();
+        if (loop->is_running()) {
+            loop->quit();
+        }
+    });
+    dialog.signal_hide().connect([&]() {
+        if (loop->is_running()) {
+            loop->quit();
+        }
+    });
+    dialog.present();
+    loop->run();
+    return response;
+}
+#endif
+
+}
+
+#if GTKMM_MAJOR_VERSION < 4 && !defined(GTKMM_DISABLE_DEPRECATED)
 std::string CtDialogs::dialog_palette(CtMainWin* pCtMainWin)
 {
     // based on plotinus
@@ -250,6 +274,229 @@ std::string CtDialogs::dialog_palette(CtMainWin* pCtMainWin)
 
     if (resulted_iter)
         return resulted_iter->get_value(columns.id);
+    return "";
+}
+#else
+std::string CtDialogs::dialog_palette(CtMainWin* pCtMainWin)
+{
+    struct CtPaletteColumns : public Gtk::TreeModelColumnRecord
+    {
+        Gtk::TreeModelColumn<int>           order;
+        Gtk::TreeModelColumn<Glib::ustring> id;
+        Gtk::TreeModelColumn<Glib::ustring> path;
+        Gtk::TreeModelColumn<Glib::ustring> icon;
+        Gtk::TreeModelColumn<Glib::ustring> label;
+        Gtk::TreeModelColumn<Glib::ustring> accelerator;
+        CtPaletteColumns() { add(order); add(id); add(path); add(icon); add(label); add(accelerator); }
+    } columns;
+
+    Glib::ustring filter;
+    std::vector<Glib::ustring> filter_words;
+
+    auto get_command_score = [&](const auto& iter) -> int {
+        auto label = iter->get_value(columns.label).lowercase();
+        auto path = iter->get_value(columns.path).lowercase();
+        int score = 0;
+        if (str::startswith(label, filter)) return score;
+        score++;
+        if (label.find(filter) != Glib::ustring::npos) return score;
+        score++;
+        if (CtStrUtil::contains_words(label, filter_words)) return score;
+        score++;
+        if (CtStrUtil::contains_words(label, filter_words, false)) return score;
+        score++;
+        if (CtStrUtil::contains_words(path, filter_words)) return score;
+        score++;
+        if (CtStrUtil::contains_words(path, filter_words, false)) return score;
+        return -1;
+    };
+
+    auto list_store = Gtk::ListStore::create(columns);
+    int order_cnt = 0;
+    for (auto& action : pCtMainWin->get_ct_menu().get_actions()) {
+        if (action.category.empty()) continue;
+        auto iter = *list_store->append();
+        iter[columns.order] = ++order_cnt;
+        iter[columns.id] = action.id;
+        iter[columns.path] = action.category;
+        iter[columns.icon] = action.image;
+        iter[columns.label] = str::replace(action.name, "_", "");
+        iter[columns.accelerator] = action.get_shortcut(pCtMainWin->get_ct_config());
+    }
+
+    auto tree_model_filter = Gtk::TreeModelFilter::create(list_store);
+    tree_model_filter->set_visible_func([&](const auto& iter) -> bool {
+        if (filter.empty()) return true;
+        return get_command_score(iter) >= 0;
+    });
+    auto tree_model_sort = Gtk::TreeModelSort::create(tree_model_filter);
+    auto set_sort_func = [&]() {
+        tree_model_sort->set_default_sort_func([&](const auto& iter_a, const auto& iter_b) {
+            const int id_difference = iter_a->get_value(columns.order) - iter_b->get_value(columns.order);
+            if (filter.empty()) {
+                return id_difference;
+            }
+            const int score_difference = get_command_score(iter_a) - get_command_score(iter_b);
+            return score_difference != 0 ? score_difference : id_difference;
+        });
+    };
+    set_sort_func();
+
+    Gtk::Dialog popup_dialog(_("Command Palette"), *pCtMainWin, true/*modal*/, false/*use_header_bar*/);
+    popup_dialog.set_default_response(Gtk::ResponseType::ACCEPT);
+    popup_dialog.set_default_size(760, 420);
+
+    auto content_box = popup_dialog.get_content_area();
+    content_box->set_spacing(4);
+    content_box->set_margin_start(8);
+    content_box->set_margin_end(8);
+    content_box->set_margin_top(8);
+    content_box->set_margin_bottom(8);
+
+    Gtk::SearchEntry search_entry;
+    search_entry.property_hexpand() = true;
+    content_box->append(search_entry);
+
+    Gtk::TreeView tree_view;
+    tree_view.set_model(tree_model_sort);
+    tree_view.set_headers_visible(false);
+    tree_view.set_can_focus(false);
+    tree_view.set_hexpand(true);
+    tree_view.set_vexpand(true);
+
+    Gtk::CellRendererText path_renderer;
+    path_renderer.property_xalign() = 1.0;
+    path_renderer.property_foreground_rgba() = Gdk::RGBA("rgba(0,0,0,0.55)");
+    auto path_column = Gtk::manage(new Gtk::TreeViewColumn{});
+    path_column->pack_start(path_renderer, true);
+    path_column->set_fixed_width(120);
+    path_column->set_cell_data_func(path_renderer, [&](Gtk::CellRenderer* cell, const auto& iter) {
+        dynamic_cast<Gtk::CellRendererText*>(cell)->property_markup()
+            = "  " + CtStrUtil::highlight_words(iter->get_value(columns.path), filter_words) + "  ";
+    });
+    tree_view.append_column(*path_column);
+
+    Gtk::CellRendererPixbuf pixbuf_renderer;
+    const int col_num_pixbuf = tree_view.append_column("", pixbuf_renderer) - 1;
+    tree_view.get_column(col_num_pixbuf)->set_fixed_width(28);
+    tree_view.get_column(col_num_pixbuf)->add_attribute(pixbuf_renderer.property_icon_name(), columns.icon);
+
+    Gtk::CellRendererText label_renderer;
+    label_renderer.property_scale() = 1.35;
+    auto label_column = Gtk::manage(new Gtk::TreeViewColumn{});
+    label_column->pack_start(label_renderer, true);
+    label_column->set_expand(true);
+    label_column->set_cell_data_func(label_renderer, [&](Gtk::CellRenderer* cell, const auto& iter) {
+        dynamic_cast<Gtk::CellRendererText*>(cell)->property_markup()
+            = CtStrUtil::highlight_words(iter->get_value(columns.label), filter_words);
+    });
+    tree_view.append_column(*label_column);
+
+    Gtk::CellRendererText accelerator_renderer;
+    accelerator_renderer.property_xalign() = 1.0;
+    accelerator_renderer.property_foreground_rgba() = Gdk::RGBA("rgba(0,0,0,0.45)");
+    auto accelerator_column = Gtk::manage(new Gtk::TreeViewColumn{});
+    accelerator_column->pack_start(accelerator_renderer, true);
+    accelerator_column->set_fixed_width(130);
+    accelerator_column->set_cell_data_func(accelerator_renderer, [&](Gtk::CellRenderer* cell, const auto& iter) {
+        dynamic_cast<Gtk::CellRendererText*>(cell)->property_markup()
+            = "  " + str::xml_escape(CtStrUtil::get_accelerator_label(iter->get_value(columns.accelerator))) + "  ";
+    });
+    tree_view.append_column(*accelerator_column);
+
+    Gtk::ScrolledWindow scrolled_window;
+    scrolled_window.set_policy(Gtk::PolicyType::NEVER, Gtk::PolicyType::AUTOMATIC);
+    scrolled_window.set_min_content_width(740);
+    scrolled_window.set_min_content_height(330);
+    scrolled_window.set_hexpand(true);
+    scrolled_window.set_vexpand(true);
+    scrolled_window.set_child(tree_view);
+    content_box->append(scrolled_window);
+
+    auto scroll_to_selected_item = [&]() {
+        if (Gtk::TreeModel::iterator selected_iter = tree_view.get_selection()->get_selected()) {
+            tree_view.scroll_to_row(tree_view.get_model()->get_path(selected_iter));
+        }
+    };
+    auto select_first_item = [&]() {
+        if (Gtk::TreeModel::iterator iter = tree_view.get_model()->get_iter("0")) {
+            tree_view.get_selection()->select(iter);
+            scroll_to_selected_item();
+        }
+    };
+    auto select_previous_item = [&]() {
+        if (Gtk::TreeModel::iterator selected_iter = tree_view.get_selection()->get_selected()) {
+            if (--selected_iter) {
+                tree_view.get_selection()->select(selected_iter);
+                scroll_to_selected_item();
+            }
+        }
+    };
+    auto select_next_item = [&]() {
+        if (Gtk::TreeModel::iterator selected_iter = tree_view.get_selection()->get_selected()) {
+            if (++selected_iter) {
+                tree_view.get_selection()->select(selected_iter);
+                scroll_to_selected_item();
+            }
+        }
+    };
+    auto set_filter = [&] (const Glib::ustring& raw_filter) {
+        filter = Glib::Regex::create("/\\s{2,}/")->replace(raw_filter.c_str(), -1, 0, " ");
+        filter = str::trim(filter).lowercase();
+        filter_words = str::split(filter, " ");
+        tree_model_filter->refilter();
+        set_sort_func();
+        select_first_item();
+    };
+
+    search_entry.signal_search_changed().connect([&]() {
+        set_filter(search_entry.get_text());
+    });
+
+    Gtk::TreeModel::iterator resulted_iter;
+    auto run_command = [&]() {
+        if (Gtk::TreeModel::iterator iter = tree_view.get_selection()->get_selected()) {
+            resulted_iter = iter;
+            popup_dialog.response(Gtk::ResponseType::ACCEPT);
+        }
+    };
+    search_entry.signal_activate().connect(run_command);
+    tree_view.signal_row_activated().connect([&](const Gtk::TreeModel::Path&, Gtk::TreeViewColumn*) {
+        run_command();
+    });
+
+    auto controller_key = Gtk::EventControllerKey::create();
+    controller_key->signal_key_pressed().connect([&](guint keyval, guint, Gdk::ModifierType) {
+        if (keyval == GDK_KEY_Escape) {
+            popup_dialog.response(Gtk::ResponseType::CANCEL);
+            return true;
+        }
+        if (keyval == GDK_KEY_Tab or keyval == GDK_KEY_ISO_Left_Tab) {
+            return true;
+        }
+        if (keyval == GDK_KEY_Up) {
+            select_previous_item();
+            return true;
+        }
+        if (keyval == GDK_KEY_Down) {
+            select_next_item();
+            return true;
+        }
+        return false;
+    }, false);
+    search_entry.add_controller(controller_key);
+
+    select_first_item();
+    search_entry.grab_focus();
+    const int response = _run_dialog_blocking(popup_dialog);
+    if (response == Gtk::ResponseType::ACCEPT) {
+        if (!resulted_iter) {
+            resulted_iter = tree_view.get_selection()->get_selected();
+        }
+        if (resulted_iter) {
+            return resulted_iter->get_value(columns.id);
+        }
+    }
     return "";
 }
 #endif

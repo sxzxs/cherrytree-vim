@@ -24,6 +24,9 @@
 #pragma once
 
 #include <gtkmm/textiter.h>
+#if GTKMM_MAJOR_VERSION >= 4 || defined(GTKMM_DISABLE_DEPRECATED)
+#include <gdkmm/texture.h>
+#endif
 #include "ct_treestore.h"
 #include "ct_codebox.h"
 #include "ct_table.h"
@@ -113,6 +116,10 @@ public:
     // GTK4 simplified clipboard/DnD ingestion (string-based)
     void on_received_to_plain_text_gtk4(const Glib::ustring& text, Gtk::TextView* pTextView, bool force_plain_text);
     void on_received_to_rich_text_gtk4(const Glib::ustring& rich_text_xml, Gtk::TextView* pTextView);
+    void on_received_to_codebox_gtk4(const Glib::ustring& xml_text, Gtk::TextView* pTextView);
+    void on_received_to_table_gtk4(const Glib::ustring& xml_text, Gtk::TextView* pTextView, const bool is_column, CtTableCommon* parentTable);
+    void on_received_to_html_gtk4(const Glib::ustring& html_content, Gtk::TextView* pTextView);
+    void on_received_to_image_gtk4(const Glib::RefPtr<Gdk::Texture>& texture, Gtk::TextView* pTextView);
     void on_received_to_uri_list_gtk4(const Glib::ustring& uri_list, Gtk::TextView* pTextView, const bool forcePlain, const bool fromDragNDrop = false);
     #endif
 
@@ -120,6 +127,8 @@ private:
     Glib::ustring _codebox_to_yaml(CtCodebox* codebox);
     void          _yaml_to_codebox(const Glib::ustring& yaml_text, Gtk::TextView* pTextView);
     void          _xml_to_codebox(const Glib::ustring& xml_text, Gtk::TextView* pTextView);
+    void          _xml_to_table(const Glib::ustring& xml_text, Gtk::TextView* pTextView, const bool is_column, CtTableCommon* parentTable);
+    void          _html_to_rich_text(const Glib::ustring& html_content, Gtk::TextView* pTextView);
 
     void _uri_or_filepath_list_into_rich_text(const std::vector<Glib::ustring>& uri_or_file_paths,
                                               Gtk::TextView* pTextView);

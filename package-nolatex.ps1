@@ -6,6 +6,8 @@ param(
 
     [switch] $SkipBuild,
     [switch] $CleanPackage,
+    [switch] $FastUpdate,
+    [switch] $Gtk4,
 
     [ValidateSet("auto", "zip", "7z", "none")]
     [string] $ArchiveFormat = "auto",
@@ -106,6 +108,9 @@ if (-not $SkipBuild) {
     if ($Jobs -gt 0) {
         $buildArgs.Jobs = $Jobs
     }
+    if ($Gtk4) {
+        $buildArgs.Gtk4 = $true
+    }
 
     Write-Host "Building release executable..."
     & $buildScript @buildArgs
@@ -118,6 +123,8 @@ $env:CT_PROJECT_ROOT_UNIX = ConvertTo-MsysPath $ProjectRoot
 $env:CT_BUILD_DIR_UNIX = ConvertTo-MsysPath $BuildDirFull
 $env:CT_ARCHIVE_FORMAT = $ArchiveFormat
 $env:CT_CLEAN_PACKAGE = $(if ($CleanPackage) { "1" } else { "0" })
+$env:CT_FAST_UPDATE = $(if ($FastUpdate) { "1" } else { "0" })
+$env:CT_WITH_GTK4 = $(if ($Gtk4) { "ON" } else { "OFF" })
 
 $bashScript = @'
 set -euo pipefail
@@ -126,6 +133,8 @@ repo="$CT_PROJECT_ROOT_UNIX"
 build_dir="$CT_BUILD_DIR_UNIX"
 archive_format="$CT_ARCHIVE_FORMAT"
 clean_package="$CT_CLEAN_PACKAGE"
+fast_update="$CT_FAST_UPDATE"
+with_gtk4="$CT_WITH_GTK4"
 
 cd "$repo"
 
@@ -147,12 +156,37 @@ if [ -z "$version" ]; then
   exit 1
 fi
 
-out_root="$build_dir/cherrytree_${version}_win64_portable_nolatex"
+package_variant="nolatex"
+gtk_share_tree="/ucrt64/share/gtk-3.0"
+gtksource_share_tree="/ucrt64/share/gtksourceview-4"
+if [ "$with_gtk4" = "ON" ]; then
+  package_variant="gtk4_nolatex"
+  gtk_share_tree="/ucrt64/share/gtk-4.0"
+  gtksource_share_tree="/ucrt64/share/gtksourceview-5"
+fi
+
+out_root="$build_dir/cherrytree_${version}_win64_portable_${package_variant}"
 out_ucrt64="$out_root/ucrt64"
-out_gtk_etc="$out_root/etc/gtk-3.0"
+if [ "$with_gtk4" = "ON" ]; then
+  out_gtk_etc="$out_root/etc/gtk-4.0"
+else
+  out_gtk_etc="$out_root/etc/gtk-3.0"
+fi
 out_share="$out_ucrt64/usr/share/cherrytree"
 out_locale="$out_ucrt64/share/locale"
 out_hunspell="$out_ucrt64/share/hunspell"
+
+if [ "$fast_update" = "1" ] && [ "$clean_package" != "1" ] && [ -d "$out_ucrt64/bin" ]; then
+  echo "Fast updating existing portable package executable..."
+  cp -a "$exe" "$out_ucrt64/bin/cherrytree.exe"
+  strip "$out_ucrt64/bin/cherrytree.exe" 2>/dev/null || true
+  cp -a "$repo/license.txt" "$out_root/" 2>/dev/null || true
+  rm -f "$out_root.7z" "$out_root.zip"
+  echo
+  echo "Portable directory: $out_root"
+  echo "Updated executable: $out_ucrt64/bin/cherrytree.exe"
+  exit 0
+fi
 
 if [ "$clean_package" = "1" ] || [ -d "$out_root" ]; then
   echo "Cleaning previous no-latex portable package..."
@@ -243,14 +277,22 @@ do
 done
 
 echo "Copying GTK module directories..."
-for runtime_dir in \
-  /ucrt64/lib/gdk-pixbuf-2.0 \
-  /ucrt64/lib/enchant-2 \
-  /ucrt64/lib/gio/modules \
-  /ucrt64/lib/gtk-3.0/3.0.0/immodules \
-  /ucrt64/lib/gtk-3.0/3.0.0/printbackends \
-  /ucrt64/lib/gtk-3.0/3.0.0/engines
-do
+runtime_dirs=(
+  /ucrt64/lib/gdk-pixbuf-2.0
+  /ucrt64/lib/enchant-2
+  /ucrt64/lib/gio/modules
+)
+if [ "$with_gtk4" = "ON" ]; then
+  runtime_dirs+=(/ucrt64/lib/gtk-4.0)
+else
+  runtime_dirs+=(
+    /ucrt64/lib/gtk-3.0/3.0.0/immodules
+    /ucrt64/lib/gtk-3.0/3.0.0/printbackends
+    /ucrt64/lib/gtk-3.0/3.0.0/engines
+  )
+fi
+
+for runtime_dir in "${runtime_dirs[@]}"; do
   if [ -d "$runtime_dir" ]; then
     copy_ucrt_tree "$runtime_dir"
     while IFS= read -r -d '' module_dll; do
@@ -276,23 +318,25 @@ while [ "$queue_index" -lt "${#binary_queue[@]}" ]; do
 done
 
 echo "Copying GTK/GLib runtime resources..."
-for runtime_tree in \
-  /ucrt64/lib/aspell-0.60 \
-  /ucrt64/etc/fonts \
-  /ucrt64/etc/dbus-1 \
-  /ucrt64/etc/ssl \
-  /ucrt64/share/dbus-1 \
-  /ucrt64/share/fontconfig \
-  /ucrt64/share/fonts \
-  /ucrt64/share/enchant-2 \
-  /ucrt64/share/glib-2.0/schemas \
-  /ucrt64/share/gtk-3.0 \
-  /ucrt64/share/gtksourceview-4 \
-  /ucrt64/share/icons \
-  /ucrt64/share/mime \
-  /ucrt64/share/themes \
+runtime_trees=(
+  /ucrt64/lib/aspell-0.60
+  /ucrt64/etc/fonts
+  /ucrt64/etc/dbus-1
+  /ucrt64/etc/ssl
+  /ucrt64/share/dbus-1
+  /ucrt64/share/fontconfig
+  /ucrt64/share/fonts
+  /ucrt64/share/enchant-2
+  /ucrt64/share/glib-2.0/schemas
+  "$gtk_share_tree"
+  "$gtksource_share_tree"
+  /ucrt64/share/icons
+  /ucrt64/share/mime
+  /ucrt64/share/themes
   /ucrt64/share/zoneinfo
-do
+)
+
+for runtime_tree in "${runtime_trees[@]}"; do
   [ -e "$runtime_tree" ] && copy_ucrt_tree "$runtime_tree"
 done
 
@@ -352,7 +396,11 @@ rm -f "$out_ucrt64/bin/libopenjph-"*.dll
 rm -f "$out_ucrt64/bin/libopenh264-"*.dll
 rm -f "$out_ucrt64/bin/libkvazaar-"*.dll
 rm -f "$out_ucrt64/bin/libcryptopp.dll"
-allowed_locale_mo='^(aspell|at-spi2-core|cherrytree|fontconfig|fontconfig-conf|gdk-pixbuf|gettext-runtime|glib20|gnutls|gspell-1|gtk30|gtk30-properties|gtksourceview-4|json-glib-1\.0|libidn2|shared-mime-info|tre|xz)\.mo$'
+if [ "$with_gtk4" = "ON" ]; then
+  allowed_locale_mo='^(aspell|at-spi2-core|cherrytree|fontconfig|fontconfig-conf|gdk-pixbuf|gettext-runtime|glib20|gnutls|gtk40|gtk40-properties|gtksourceview-5|json-glib-1\.0|libidn2|libspelling|shared-mime-info|tre|xz)\.mo$'
+else
+  allowed_locale_mo='^(aspell|at-spi2-core|cherrytree|fontconfig|fontconfig-conf|gdk-pixbuf|gettext-runtime|glib20|gnutls|gspell-1|gtk30|gtk30-properties|gtksourceview-4|json-glib-1\.0|libidn2|shared-mime-info|tre|xz)\.mo$'
+fi
 while IFS= read -r -d '' mo_file; do
   mo_name="$(basename "$mo_file")"
   if [[ ! "$mo_name" =~ $allowed_locale_mo ]]; then

@@ -12,6 +12,14 @@ void CtMainWin::init_app_actions_gtk4()
     for (const auto& act : _uCtMenu->get_actions()) {
         if (act.id.empty()) continue;
 
+        if (not lookup_action(act.id)) {
+            add_action(act.id, [this, action_id = act.id]() {
+                if (auto a = _uCtMenu->find_action(action_id)) {
+                    if (a->run_action) a->run_action();
+                }
+            });
+        }
+
         if (not app->lookup_action(act.id)) {
             auto simple = Gio::SimpleAction::create(act.id);
             simple->signal_activate().connect([this, action_id = act.id](const Glib::VariantBase&){
@@ -301,6 +309,8 @@ CtMainWin::CtMainWin(bool                            no_gui,
     textView.signal_event().connect(sigc::mem_fun(*this, &CtMainWin::_on_textview_event));
     textView.signal_event_after().connect(sigc::mem_fun(*this, &CtMainWin::_on_textview_event_after));
     textView.signal_scroll_event().connect(sigc::mem_fun(*this, &CtMainWin::_on_textview_scroll_event));
+    #else
+    _setup_textview_interaction_gtk4();
     #endif
 
     _uCtPairCodeboxMainWin.reset(new CtPairCodeboxMainWin{nullptr, this});
@@ -617,10 +627,16 @@ void CtMainWin::_reset_CtTreestore_CtTreeview()
     _uCtTreeview->signal_row_activated().connect(sigc::mem_fun(*this, &CtMainWin::_on_treeview_row_activated));
     _uCtTreeview->signal_row_expanded().connect(sigc::mem_fun(*this, &CtMainWin::_on_treeview_row_expanded));
     _uCtTreeview->signal_row_collapsed().connect(sigc::mem_fun(*this, &CtMainWin::_on_treeview_row_collapsed));
-    _uCtTreeview->signal_test_collapse_row().connect(sigc::mem_fun(*this, &CtMainWin::_on_treeview_test_collapse_row));
+    _uCtTreeview->signal_test_collapse_row().connect(sigc::mem_fun(*this, &CtMainWin::_on_treeview_test_collapse_row), false);
     _uCtTreeview->signal_key_press_event().connect(sigc::mem_fun(*this, &CtMainWin::_on_treeview_key_press_event), false);
     _uCtTreeview->signal_scroll_event().connect(sigc::mem_fun(*this, &CtMainWin::_on_treeview_scroll_event));
     _uCtTreeview->signal_popup_menu().connect(sigc::mem_fun(*this, &CtMainWin::_on_treeview_popup_menu));
+    #else
+    _setup_treeview_interaction_gtk4();
+    _uCtTreeview->signal_row_activated().connect(sigc::mem_fun(*this, &CtMainWin::_on_treeview_row_activated));
+    _uCtTreeview->signal_row_expanded().connect(sigc::mem_fun(*this, &CtMainWin::_on_treeview_row_expanded));
+    _uCtTreeview->signal_row_collapsed().connect(sigc::mem_fun(*this, &CtMainWin::_on_treeview_row_collapsed));
+    _uCtTreeview->signal_test_collapse_row().connect(sigc::mem_fun(*this, &CtMainWin::_on_treeview_test_collapse_row), false);
     #endif
 
     #if GTKMM_MAJOR_VERSION < 4 && !defined(GTKMM_DISABLE_DEPRECATED)
@@ -679,6 +695,9 @@ void CtMainWin::config_apply()
     #if GTKMM_MAJOR_VERSION >= 4
     gtk_text_view_set_bottom_margin(GTK_TEXT_VIEW(textView.gobj()), _pCtConfig->scrollBeyondLastLine ? 400 : 0);
     textView.set_wrap_mode(_pCtConfig->lineWrapping ? Gtk::WrapMode::WORD_CHAR : Gtk::WrapMode::NONE);
+    #if GTK_SOURCE_CHECK_VERSION(5, 4, 0)
+    _ctTextview.set_vim_mode_enabled(_pCtConfig->enableVimMode);
+    #endif
     #else
     textView.set_wrap_mode(_pCtConfig->lineWrapping ? Gtk::WrapMode::WRAP_WORD_CHAR : Gtk::WrapMode::WRAP_NONE);
     #endif
@@ -707,6 +726,7 @@ void CtMainWin::config_update_data_from_curr_status()
 {
     _ensure_curr_doc_in_recent_docs();
     _ctTextview.synch_spell_check_change_from_gspell_right_click_menu();
+    _pCtConfig->enableVimMode = _ctTextview.get_vim_mode_enabled();
 }
 
 void CtMainWin::update_theme()

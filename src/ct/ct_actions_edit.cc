@@ -565,6 +565,8 @@ void CtActions::text_selection_toggle_case()
 
 void CtActions::toggle_ena_dis_vim_mode()
 {
+    _pCtConfig->enableVimMode = _pCtMainWin->get_text_view().toggle_vim_mode();
+    _pCtConfig->rememberVimMode = true;
 }
 
 void CtActions::toggle_ena_dis_spellcheck()

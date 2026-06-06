@@ -12,8 +12,12 @@ param(
     [switch] $RunTests,
     [switch] $BundledSpdlogFmt,
     [switch] $Gtk4,
+    [switch] $Package,
+    [switch] $PackageFast,
     [switch] $NoNls,
     [switch] $NoZmqRemote,
+    [ValidateSet("auto", "zip", "7z", "none")]
+    [string] $PackageArchiveFormat = "none",
     [string] $Msys2Root
 )
 
@@ -170,4 +174,29 @@ try {
     }
 } finally {
     Remove-Item -LiteralPath $TempScript -Force -ErrorAction SilentlyContinue
+}
+
+if ($Package -or $PackageFast) {
+    $packageScript = Join-Path $ProjectRoot "package-nolatex.ps1"
+    if (-not (Test-Path $packageScript)) {
+        throw "Missing package script: $packageScript"
+    }
+
+    $packageArgs = @{
+        BuildDir = $BuildDirFull
+        SkipBuild = $true
+        CleanPackage = (-not $PackageFast)
+        FastUpdate = $PackageFast
+        ArchiveFormat = $PackageArchiveFormat
+        Msys2Root = $ResolvedMsys2Root
+    }
+    if ($Gtk4) {
+        $packageArgs.Gtk4 = $true
+    }
+
+    Write-Host "Deploying executable into portable package..."
+    & $packageScript @packageArgs
+    if ($LASTEXITCODE -ne 0) {
+        exit $LASTEXITCODE
+    }
 }

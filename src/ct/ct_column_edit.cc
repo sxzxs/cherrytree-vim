@@ -31,14 +31,12 @@ CtColumnEdit::CtColumnEdit(Gtk::TextView& textView)
 {
 }
 
-#if GTKMM_MAJOR_VERSION < 4 && !defined(GTKMM_DISABLE_DEPRECATED)
-
-Gdk::Point CtColumnEdit::_get_point(const Gtk::TextIter& textIter)
+CtColEditPoint CtColumnEdit::_get_point(const Gtk::TextIter& textIter)
 {
-    return Gdk::Point{textIter.get_line_offset(), textIter.get_line()};
+    return CtColEditPoint{textIter.get_line_offset(), textIter.get_line()};
 }
 
-Gdk::Point CtColumnEdit::_get_cursor_column_mode_place()
+CtColEditPoint CtColumnEdit::_get_cursor_column_mode_place()
 {
     if (_marksEnd.size() > 0) {
         _pointEnd = _get_point(_marksEnd.back()->get_iter());
@@ -49,10 +47,10 @@ Gdk::Point CtColumnEdit::_get_cursor_column_mode_place()
     if (_marksStart.size()) {
         _pointStart = _get_point(_marksStart.front()->get_iter());
     }
-    return Gdk::Point{_pointEnd.get_x(), _pointStart.get_y()};
+    return CtColEditPoint{_pointEnd.get_x(), _pointStart.get_y()};
 }
 
-Gdk::Point CtColumnEdit::_get_cursor_place()
+CtColEditPoint CtColumnEdit::_get_cursor_place()
 {
     Glib::RefPtr<Gtk::TextBuffer> pTextBuffer = _textView.get_buffer();
     Gtk::TextIter iterInsert = pTextBuffer->get_insert()->get_iter();
@@ -62,7 +60,7 @@ Gdk::Point CtColumnEdit::_get_cursor_place()
 bool CtColumnEdit::_enforce_cursor_column_mode_place()
 {
     Glib::RefPtr<Gtk::TextBuffer> pTextBuffer = _textView.get_buffer();
-    Gdk::Point cursorPlace = _get_cursor_column_mode_place();
+    CtColEditPoint cursorPlace = _get_cursor_column_mode_place();
     Gtk::TextIter currIter = pTextBuffer->get_iter_at_line_offset(cursorPlace.get_y(), cursorPlace.get_x());
     if (currIter) {
         pTextBuffer->place_cursor(currIter);
@@ -248,10 +246,10 @@ void CtColumnEdit::_edit_insert_delete(const bool isInsert)
                     std::lock_guard<std::mutex> lock(_mutexLastInOut);
                     if (firstLine) {
                         firstLine = false;
-                        Gdk::Point cursorPlace = _get_cursor_place();
-                        Gdk::Point iterStartPoint = _get_point(iterStart);
+                        CtColEditPoint cursorPlace = _get_cursor_place();
+                        CtColEditPoint iterStartPoint = _get_point(iterStart);
                         if (isInsert) {
-                            Gdk::Point expCursor = iterStartPoint;
+                            CtColEditPoint expCursor = iterStartPoint;
                             expCursor.set_x(expCursor.get_x() + _lastInsertedText.size());
                             if ( _lastInsertedPoint != iterStartPoint or
                                  cursorPlace != expCursor )
@@ -367,8 +365,8 @@ void CtColumnEdit::column_mode_off()
 
 void CtColumnEdit::text_inserted(const Gtk::TextIter& pos, const Glib::ustring& text)
 {
-    Glib::signal_idle().connect_once([&](){
-        const Gdk::Point cursorPlace = _get_cursor_place();
+    Glib::signal_idle().connect_once([this](){
+        const CtColEditPoint cursorPlace = _get_cursor_place();
         if (_newCursorRowColCallback) {
             _newCursorRowColCallback(cursorPlace.get_y()+1, cursorPlace.get_x());
         }
@@ -384,7 +382,7 @@ void CtColumnEdit::text_inserted(const Gtk::TextIter& pos, const Glib::ustring& 
         _lastInsertedText = text;
         _lastInsertedPoint = _get_point(pos);
     }
-    Glib::signal_idle().connect_once([&](){
+    Glib::signal_idle().connect_once([this](){
         if (CtColEditState::PrEdit == _state) {
             _predit_to_edit();
         }
@@ -394,8 +392,8 @@ void CtColumnEdit::text_inserted(const Gtk::TextIter& pos, const Glib::ustring& 
 
 void CtColumnEdit::text_removed(const Gtk::TextIter& range_start, const Gtk::TextIter& range_end)
 {
-    Glib::signal_idle().connect_once([&](){
-        const Gdk::Point cursorPlace = _get_cursor_place();
+    Glib::signal_idle().connect_once([this](){
+        const CtColEditPoint cursorPlace = _get_cursor_place();
         if (_newCursorRowColCallback) {
             _newCursorRowColCallback(cursorPlace.get_y()+1, cursorPlace.get_x());
         }
@@ -452,7 +450,7 @@ void CtColumnEdit::text_removed(const Gtk::TextIter& range_start, const Gtk::Tex
             return;
         }
     }
-    Glib::signal_idle().connect_once([&](){
+    Glib::signal_idle().connect_once([this](){
         if (CtColEditState::PrEdit == _state) {
             _predit_to_edit();
             std::lock_guard<std::mutex> lock(_mutexLastInOut);
@@ -509,7 +507,7 @@ void CtColumnEdit::button_1_released()
 
 void CtColumnEdit::focus_in()
 {
-    const Gdk::Point cursorPlace = _get_cursor_place();
+    const CtColEditPoint cursorPlace = _get_cursor_place();
     if (_newCursorRowColCallback) {
         _newCursorRowColCallback(cursorPlace.get_y()+1, cursorPlace.get_x());
     }
@@ -520,7 +518,7 @@ void CtColumnEdit::focus_in()
 
 void CtColumnEdit::selection_update()
 {
-    const Gdk::Point cursorPlace = _get_cursor_place();
+    const CtColEditPoint cursorPlace = _get_cursor_place();
     if (_textView.has_focus()) {
         if (_newCursorRowColCallback) {
             _newCursorRowColCallback(cursorPlace.get_y()+1, cursorPlace.get_x());
@@ -573,51 +571,3 @@ void CtColumnEdit::selection_update()
         }
     }
 }
-
-#else
-
-Glib::ustring CtColumnEdit::copy() const
-{
-    return "";
-}
-
-Glib::ustring CtColumnEdit::cut()
-{
-    return "";
-}
-
-void CtColumnEdit::paste(const std::string& /*column_txt*/)
-{
-}
-
-void CtColumnEdit::button_1_released()
-{
-}
-
-void CtColumnEdit::text_inserted(const Gtk::TextIter& /*pos*/, const Glib::ustring& /*text*/)
-{
-}
-
-void CtColumnEdit::text_removed(const Gtk::TextIter& /*range_start*/, const Gtk::TextIter& /*range_end*/)
-{
-}
-
-void CtColumnEdit::column_mode_off()
-{
-    if (CtColEditState::Off != _state) {
-        _state = CtColEditState::Off;
-        if (_stateOnOffCallback) {
-            _stateOnOffCallback(false);
-        }
-    }
-}
-
-void CtColumnEdit::focus_in()
-{
-}
-
-void CtColumnEdit::selection_update()
-{
-}
-
-#endif

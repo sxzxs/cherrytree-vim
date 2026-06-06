@@ -107,6 +107,10 @@ public:
     bool on_table_button_press_event(GdkEventButton* event);
     void on_cell_populate_popup(Gtk::Menu* menu);
     bool on_cell_key_press_event(GdkEventKey* event);
+    #else
+    void on_table_button_pressed_gtk4(Gtk::GestureClick& click, int n_press, Gtk::Widget& parent, double x, double y);
+    void popup_cell_menu_gtk4(Gtk::Widget& parent, double x, double y);
+    bool on_cell_key_pressed_gtk4(guint keyval, Gdk::ModifierType state);
     #endif
 
 protected:

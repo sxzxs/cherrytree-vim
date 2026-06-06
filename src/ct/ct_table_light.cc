@@ -119,6 +119,41 @@ void CtTableLight::_reset(CtTableMatrix& tableMatrix)
 #if GTKMM_MAJOR_VERSION < 4 && !defined(GTKMM_DISABLE_DEPRECATED)
     _pManagedTreeView->signal_button_press_event().connect(sigc::mem_fun(*this, &CtTableCommon::on_table_button_press_event), false);
     _pManagedTreeView->signal_event_after().connect(sigc::mem_fun(*this, &CtTableLight::_on_treeview_event_after));
+#else
+    auto tree_click = Gtk::GestureClick::create();
+    tree_click->set_button(0);
+    tree_click->set_propagation_phase(Gtk::PropagationPhase::CAPTURE);
+    tree_click->signal_pressed().connect([this, tree_click](int n_press, double x, double y) {
+        Gtk::TreePath path;
+        Gtk::TreeViewColumn* pColumn = nullptr;
+        int cell_x = 0;
+        int cell_y = 0;
+        int bx = 0;
+        int by = 0;
+        _pManagedTreeView->convert_widget_to_bin_window_coords(static_cast<int>(x), static_cast<int>(y), bx, by);
+        if (_pManagedTreeView->get_path_at_pos(bx, by, path, pColumn, cell_x, cell_y) and path) {
+            _currentRow = static_cast<size_t>(path[0]);
+            for (size_t c = 0u; c < get_num_columns(); ++c) {
+                if (_pManagedTreeView->get_column(c) == pColumn) {
+                    _currentColumn = c;
+                    break;
+                }
+            }
+        }
+        on_table_button_pressed_gtk4(*tree_click, n_press, *_pManagedTreeView, x, y);
+    });
+    _pManagedTreeView->add_controller(tree_click);
+
+    auto tree_key = Gtk::EventControllerKey::create();
+    tree_key->signal_key_pressed().connect([this](guint keyval, guint, Gdk::ModifierType state) -> bool {
+        _pCtMainWin->get_ct_actions()->curr_table_anchor = this;
+        if (keyval == GDK_KEY_Menu) {
+            popup_cell_menu_gtk4(*_pManagedTreeView, 0, 0);
+            return true;
+        }
+        return on_cell_key_pressed_gtk4(keyval, state);
+    }, false);
+    _pManagedTreeView->add_controller(tree_key);
 #endif
 
     _pManagedTreeView->get_style_context()->add_class("ct-table-light");
@@ -160,6 +195,32 @@ void CtTableLight::_on_cell_renderer_editing_started(Gtk::CellEditable* editable
         _pEditingCellEntry->signal_populate_popup().connect(sigc::mem_fun(*this, &CtTableCommon::on_cell_populate_popup));
         _pEditingCellEntry->signal_key_press_event().connect(sigc::mem_fun(*this, &CtTableCommon::on_cell_key_press_event), false);
         _pEditingCellEntry->signal_focus_out_event().connect(sigc::bind(sigc::mem_fun(*this, &CtTableLight::_on_entry_focus_out_event), _pEditingCellEntry, path, column));
+#else
+        auto entry_click = Gtk::GestureClick::create();
+        entry_click->set_button(0);
+        entry_click->set_propagation_phase(Gtk::PropagationPhase::CAPTURE);
+        entry_click->signal_pressed().connect([this, entry_click](int n_press, double x, double y) {
+            if (entry_click->get_current_button() == 3) {
+                _pCtMainWin->get_ct_actions()->curr_table_anchor = this;
+                popup_cell_menu_gtk4(*_pEditingCellEntry, x, y);
+                entry_click->set_state(Gtk::EventSequenceState::CLAIMED);
+            }
+            else if (n_press != 2 and n_press != 3) {
+                _pCtMainWin->get_ct_actions()->object_set_selection(this);
+            }
+        });
+        _pEditingCellEntry->add_controller(entry_click);
+
+        auto entry_key = Gtk::EventControllerKey::create();
+        entry_key->signal_key_pressed().connect([this](guint keyval, guint, Gdk::ModifierType state) -> bool {
+            _pCtMainWin->get_ct_actions()->curr_table_anchor = this;
+            if (keyval == GDK_KEY_Menu) {
+                popup_cell_menu_gtk4(*_pEditingCellEntry, 0, 0);
+                return true;
+            }
+            return on_cell_key_pressed_gtk4(keyval, state);
+        }, false);
+        _pEditingCellEntry->add_controller(entry_key);
 #endif
     }
 }

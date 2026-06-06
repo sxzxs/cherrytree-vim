@@ -109,6 +109,32 @@ CtImagePng::CtImagePng(CtMainWin* pCtMainWin,
 {
 #if GTKMM_MAJOR_VERSION < 4
     signal_button_press_event().connect(sigc::mem_fun(*this, &CtImagePng::_on_button_press_event), false);
+#else
+    auto click = Gtk::GestureClick::create();
+    click->set_button(0);
+    click->signal_pressed().connect([this, click](int n_press, double x, double y) {
+        const unsigned int button = click->get_current_button();
+        _pCtMainWin->get_ct_actions()->curr_image_anchor = this;
+        _pCtMainWin->get_ct_actions()->object_set_selection(this);
+        if (button == 3) {
+            _pCtMainWin->get_ct_menu().popup_menu_at_widget4(CtMenu::POPUP_MENU_TYPE::Image, *this, x, y);
+            click->set_state(Gtk::EventSequenceState::CLAIMED);
+        }
+        else if (button == 1 || button == 2) {
+            if (n_press == 2) {
+                if (_pCtConfig->doubleClickLink and not _link.empty()) {
+                    _pCtMainWin->get_ct_actions()->link_clicked(_link, button == 2);
+                }
+                else {
+                    _pCtMainWin->get_ct_actions()->image_edit();
+                }
+            }
+            else if (not _pCtConfig->doubleClickLink and not _link.empty()) {
+                _pCtMainWin->get_ct_actions()->link_clicked(_link, button == 2);
+            }
+        }
+    });
+    add_controller(click);
 #endif
     update_label_widget();
 }
@@ -123,6 +149,32 @@ CtImagePng::CtImagePng(CtMainWin* pCtMainWin,
 {
 #if GTKMM_MAJOR_VERSION < 4
     signal_button_press_event().connect(sigc::mem_fun(*this, &CtImagePng::_on_button_press_event), false);
+#else
+    auto click = Gtk::GestureClick::create();
+    click->set_button(0);
+    click->signal_pressed().connect([this, click](int n_press, double x, double y) {
+        const unsigned int button = click->get_current_button();
+        _pCtMainWin->get_ct_actions()->curr_image_anchor = this;
+        _pCtMainWin->get_ct_actions()->object_set_selection(this);
+        if (button == 3) {
+            _pCtMainWin->get_ct_menu().popup_menu_at_widget4(CtMenu::POPUP_MENU_TYPE::Image, *this, x, y);
+            click->set_state(Gtk::EventSequenceState::CLAIMED);
+        }
+        else if (button == 1 || button == 2) {
+            if (n_press == 2) {
+                if (_pCtConfig->doubleClickLink and not _link.empty()) {
+                    _pCtMainWin->get_ct_actions()->link_clicked(_link, button == 2);
+                }
+                else {
+                    _pCtMainWin->get_ct_actions()->image_edit();
+                }
+            }
+            else if (not _pCtConfig->doubleClickLink and not _link.empty()) {
+                _pCtMainWin->get_ct_actions()->link_clicked(_link, button == 2);
+            }
+        }
+    });
+    add_controller(click);
 #endif
     update_label_widget();
 }
@@ -252,6 +304,27 @@ CtImageAnchor::CtImageAnchor(CtMainWin* pCtMainWin,
 {
 #if GTKMM_MAJOR_VERSION < 4
     signal_button_press_event().connect(sigc::mem_fun(*this, &CtImageAnchor::_on_button_press_event), false);
+#else
+    auto click = Gtk::GestureClick::create();
+    click->set_button(0);
+    click->signal_pressed().connect([this, click](int n_press, double x, double y) {
+        const unsigned int button = click->get_current_button();
+        _pCtMainWin->get_ct_actions()->curr_anchor_anchor = this;
+        _pCtMainWin->get_ct_actions()->object_set_selection(this);
+        if (button == 3) {
+            _pCtMainWin->get_ct_menu().popup_menu_at_widget4(CtMenu::POPUP_MENU_TYPE::Anchor, *this, x, y);
+            click->set_state(Gtk::EventSequenceState::CLAIMED);
+        }
+        else if (button == 1) {
+            if (n_press == 2) {
+                _pCtMainWin->get_ct_actions()->anchor_edit();
+            }
+            else if (CtAnchorExpCollState::None != _expCollState) {
+                toggle_exp_coll_state();
+            }
+        }
+    });
+    add_controller(click);
 #endif
 }
 
@@ -435,6 +508,21 @@ CtImageLatex::CtImageLatex(CtMainWin* pCtMainWin,
 {
 #if GTKMM_MAJOR_VERSION < 4
     signal_button_press_event().connect(sigc::mem_fun(*this, &CtImageLatex::_on_button_press_event), false);
+#else
+    auto click = Gtk::GestureClick::create();
+    click->set_button(0);
+    click->signal_pressed().connect([this, click](int n_press, double x, double y) {
+        _pCtMainWin->get_ct_actions()->curr_latex_anchor = this;
+        _pCtMainWin->get_ct_actions()->object_set_selection(this);
+        if (click->get_current_button() == 3) {
+            _pCtMainWin->get_ct_menu().popup_menu_at_widget4(CtMenu::POPUP_MENU_TYPE::Latex, *this, x, y);
+            click->set_state(Gtk::EventSequenceState::CLAIMED);
+        }
+        else if (n_press == 2) {
+            _pCtMainWin->get_ct_actions()->latex_edit();
+        }
+    });
+    add_controller(click);
 #endif
     update_tooltip();
 }
@@ -571,7 +659,11 @@ static const char* get_dvipng_bin_cmd()
     }
     if (not _is_latex_text_safe(latexText)) {
         // blocked: dangerous file I/O commands detected
+#if GTKMM_MAJOR_VERSION < 4
         return pCtMainWin->get_icon_theme()->load_icon("ct_warning", 48);
+#else
+        return Glib::RefPtr<Gdk::Pixbuf>{};
+#endif
     }
     const fs::path filename = std::to_string(uniqueId) +
                               CtConst::CHAR_MINUS + std::to_string(getpid()) +
@@ -785,6 +877,21 @@ CtImageEmbFile::CtImageEmbFile(CtMainWin* pCtMainWin,
 {
 #if GTKMM_MAJOR_VERSION < 4
     signal_button_press_event().connect(sigc::mem_fun(*this, &CtImageEmbFile::_on_button_press_event), false);
+#else
+    auto click = Gtk::GestureClick::create();
+    click->set_button(0);
+    click->signal_pressed().connect([this, click](int n_press, double x, double y) {
+        _pCtMainWin->get_ct_actions()->curr_file_anchor = this;
+        _pCtMainWin->get_ct_actions()->object_set_selection(this);
+        if (click->get_current_button() == 3) {
+            _pCtMainWin->get_ct_menu().popup_menu_at_widget4(CtMenu::POPUP_MENU_TYPE::EmbFile, *this, x, y);
+            click->set_state(Gtk::EventSequenceState::CLAIMED);
+        }
+        else if (n_press == 2) {
+            _pCtMainWin->get_ct_actions()->embfile_open();
+        }
+    });
+    add_controller(click);
 #endif
     update_tooltip();
     update_label_widget();

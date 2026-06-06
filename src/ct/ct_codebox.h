@@ -113,6 +113,10 @@ private:
     Gtk::ScrolledWindow _scrolledwindow;
 #if GTKMM_MAJOR_VERSION >= 4
     Gtk::Box _hbox{Gtk::Orientation::HORIZONTAL};
+    Gtk::Box _toolbar4{Gtk::Orientation::VERTICAL};
+    Gtk::Button _toolButtonPlay4;
+    Gtk::Button _toolButtonCopy4;
+    Gtk::Button _toolButtonProp4;
 #else
     Gtk::Box _hbox{Gtk::ORIENTATION_HORIZONTAL};
 #endif

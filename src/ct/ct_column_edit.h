@@ -31,6 +31,19 @@
 
 enum class CtColEditState { Off, Selection, PrEdit, Edit };
 
+struct CtColEditPoint
+{
+    int x{-1};
+    int y{-1};
+
+    int get_x() const { return x; }
+    int get_y() const { return y; }
+    void set_x(const int value) { x = value; }
+    void set_y(const int value) { y = value; }
+    bool operator==(const CtColEditPoint& other) const { return x == other.x and y == other.y; }
+    bool operator!=(const CtColEditPoint& other) const { return not (*this == other); }
+};
+
 class CtColumnEdit
 {
 public:
@@ -58,11 +71,9 @@ public:
     void focus_in();
 
 private:
-#if GTKMM_MAJOR_VERSION < 4 && !defined(GTKMM_DISABLE_DEPRECATED)
-    Gdk::Point _get_point(const Gtk::TextIter& textIter);
-    Gdk::Point _get_cursor_place();
-    Gdk::Point _get_cursor_column_mode_place();
-#endif
+    CtColEditPoint _get_point(const Gtk::TextIter& textIter);
+    CtColEditPoint _get_cursor_place();
+    CtColEditPoint _get_cursor_column_mode_place();
     void _clear_marks(const bool alsoStart = true);
     void _predit_to_edit();
     void _predit_to_edit_iter(Gtk::TextIter& iterStart, Gtk::TextIter& iterEnd, bool& firstLine);
@@ -70,13 +81,9 @@ private:
     bool _enforce_cursor_column_mode_place();
 
     Glib::ustring _lastInsertedText;
-    #if GTKMM_MAJOR_VERSION < 4 && !defined(GTKMM_DISABLE_DEPRECATED)
-    Gdk::Point _lastInsertedPoint;
-    #endif
+    CtColEditPoint _lastInsertedPoint;
     Glib::ustring _lastRemovedText;
-    #if GTKMM_MAJOR_VERSION < 4 && !defined(GTKMM_DISABLE_DEPRECATED)
-    Gdk::Point _lastRemovedPoint;
-    #endif
+    CtColEditPoint _lastRemovedPoint;
     int _lastRemovedDeltaOffset;
     std::mutex _mutexLastInOut;
 
@@ -87,10 +94,8 @@ private:
     std::atomic<bool> _ctrlDown{false};
     std::atomic<bool> _altDown{false};
     std::atomic<bool> _myOwnInsertDelete{false};
-    #if GTKMM_MAJOR_VERSION < 4 && !defined(GTKMM_DISABLE_DEPRECATED)
-    Gdk::Point _pointStart{-1,-1};
-    Gdk::Point _pointEnd{-1,-1};
-    #endif
+    CtColEditPoint _pointStart{-1, -1};
+    CtColEditPoint _pointEnd{-1, -1};
     std::vector<Glib::RefPtr<Gtk::TextMark>> _marksStart;
     std::vector<Glib::RefPtr<Gtk::TextMark>> _marksEnd;
 };

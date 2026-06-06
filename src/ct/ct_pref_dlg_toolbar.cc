@@ -23,13 +23,104 @@
 
 #include "ct_pref_dlg.h"
 #include "ct_main_win.h"
+#if GTKMM_MAJOR_VERSION >= 4
+#include <gtkmm/eventcontrollerkey.h>
+#endif
 
 Gtk::Widget* CtPrefDlg::build_tab_toolbar()
 {
 #if GTKMM_MAJOR_VERSION >= 4
-    auto box = Gtk::manage(new Gtk::Box{Gtk::Orientation::VERTICAL, 6/*spacing*/});
-    box->append(*Gtk::manage(new Gtk::Label{_("Toolbar preferences are temporarily limited in GTK4 build.")}));
-    return box;
+    Glib::RefPtr<Gtk::ListStore> liststore = Gtk::ListStore::create(_toolbarModelColumns);
+    fill_toolbar_model(liststore);
+    Gtk::TreeView* treeview = Gtk::manage(new Gtk::TreeView(liststore));
+    treeview->set_headers_visible(false);
+    treeview->set_reorderable(true);
+    treeview->set_size_request(300, 300);
+    {
+        auto const_iter = liststore->children().begin();
+        if (const_iter) {
+            treeview->get_selection()->select(liststore->get_iter(liststore->get_path(const_iter)));
+        }
+    }
+
+    Gtk::CellRendererPixbuf pixbuf_renderer;
+    const int col_num_pixbuf = treeview->append_column("", pixbuf_renderer) - 1;
+    treeview->get_column(col_num_pixbuf)->add_attribute(pixbuf_renderer.property_icon_name(), _toolbarModelColumns.icon);
+    treeview->append_column("", _toolbarModelColumns.desc);
+
+    Gtk::ScrolledWindow* scrolledwindow = Gtk::manage(new Gtk::ScrolledWindow{});
+    scrolledwindow->set_child(*treeview);
+
+    Gtk::Button* button_add = Gtk::manage(new Gtk::Button{});
+    button_add->set_icon_name("ct_add");
+    button_add->set_tooltip_text(_("Add"));
+    Gtk::Button* button_remove = Gtk::manage(new Gtk::Button{});
+    button_remove->set_icon_name("ct_remove");
+    button_remove->set_tooltip_text(_("Remove Selected"));
+    Gtk::Button* button_reset = Gtk::manage(new Gtk::Button{});
+    button_reset->set_icon_name("ct_undo");
+    button_reset->set_tooltip_text(_("Reset to Default"));
+
+    auto hbox = Gtk::manage(new Gtk::Box{Gtk::Orientation::HORIZONTAL});
+    auto vbox = Gtk::manage(new Gtk::Box{Gtk::Orientation::VERTICAL});
+    vbox->append(*button_add);
+    vbox->append(*button_remove);
+    auto spacer = Gtk::manage(new Gtk::Box{Gtk::Orientation::VERTICAL});
+    spacer->set_vexpand(true);
+    vbox->append(*spacer);
+    vbox->append(*button_reset);
+    hbox->append(*scrolledwindow);
+    hbox->append(*vbox);
+
+    auto pMainBox = Gtk::manage(new Gtk::Box{Gtk::Orientation::VERTICAL, 3/*spacing*/});
+    pMainBox->append(*hbox);
+
+    auto persist_toolbar_model = [this, liststore]() {
+        update_config_toolbar_from_model(liststore);
+        apply_for_each_window([](CtMainWin* win) { win->menu_rebuild_toolbars(true); });
+    };
+    button_add->signal_clicked().connect([this, treeview, liststore, persist_toolbar_model](){
+        if (add_new_item_in_toolbar_model(treeview, liststore)) {
+            persist_toolbar_model();
+        }
+    });
+    auto remove_selected_row = [treeview, liststore, persist_toolbar_model]() {
+        auto selected = treeview->get_selection()->get_selected();
+        if (!selected) {
+            return;
+        }
+        liststore->erase(selected);
+        persist_toolbar_model();
+    };
+    button_remove->signal_clicked().connect(remove_selected_row);
+    button_reset->signal_clicked().connect([this, liststore](){
+        if (CtDialogs::question_dialog(reset_warning, *this)) {
+            _pConfig->toolbarUiList = CtConst::TOOLBAR_VEC_DEFAULT;
+            fill_toolbar_model(liststore);
+            apply_for_each_window([](CtMainWin* win) { win->menu_rebuild_toolbars(true); });
+        }
+    });
+
+    auto key_controller = Gtk::EventControllerKey::create();
+    key_controller->signal_key_pressed().connect([remove_selected_row](guint keyval, guint, Gdk::ModifierType) -> bool {
+        if (keyval == GDK_KEY_Delete) {
+            remove_selected_row();
+            return true;
+        }
+        return false;
+    }, false);
+    treeview->add_controller(key_controller);
+
+    auto button_remove_test_sensitive = [button_remove, treeview](){
+        button_remove->set_sensitive(treeview->get_selection()->count_selected_rows() > 0);
+    };
+    treeview->signal_cursor_changed().connect(button_remove_test_sensitive);
+    liststore->signal_rows_reordered().connect([persist_toolbar_model](const Gtk::TreeModel::Path&, const Gtk::TreeModel::iterator&, int*) {
+        persist_toolbar_model();
+    });
+    button_remove_test_sensitive();
+
+    return pMainBox;
 #else
     Glib::RefPtr<Gtk::ListStore> liststore = Gtk::ListStore::create(_toolbarModelColumns);
     fill_toolbar_model(liststore);
@@ -150,11 +241,6 @@ void CtPrefDlg::populate_row_in_toolbar_model(Gtk::TreeModel::iterator row, cons
 
 bool CtPrefDlg::add_new_item_in_toolbar_model(Gtk::TreeView* treeview, Glib::RefPtr<Gtk::ListStore> model)
 {
-#if GTKMM_MAJOR_VERSION >= 4
-    (void)treeview;
-    (void)model;
-    return false;
-#else
     auto itemStore = CtChooseDialogListStore::create();
     itemStore->add_row("", CtConst::TAG_SEPARATOR, CtConst::TAG_SEPARATOR_ANSI_REPR);
     itemStore->add_row("", CtConst::TOOLBAR_SPLIT, _("Split Toolbar"));
@@ -183,12 +269,11 @@ bool CtPrefDlg::add_new_item_in_toolbar_model(Gtk::TreeView* treeview, Glib::Ref
                                                     std::make_pair(500, _pConfig->winRect[3]));
     if (chosen_row) {
         auto selected_row = treeview->get_selection()->get_selected();
-        auto new_row = selected_row ? model->insert_after(*selected_row) : model->append();
+        auto new_row = selected_row ? model->insert_after(selected_row) : model->append();
         populate_row_in_toolbar_model(new_row, chosen_row->get_value(itemStore->columns.key));
         return true;
     }
     return false;
-#endif
 }
 
 void CtPrefDlg::update_config_toolbar_from_model(Glib::RefPtr<Gtk::ListStore> model)

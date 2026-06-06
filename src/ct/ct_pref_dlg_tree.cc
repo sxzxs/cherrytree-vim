@@ -27,9 +27,167 @@
 Gtk::Widget* CtPrefDlg::build_tab_tree()
 {
 #if GTKMM_MAJOR_VERSION >= 4
-    auto box = Gtk::manage(new Gtk::Box{Gtk::Orientation::VERTICAL, 6/*spacing*/});
-    box->append(*Gtk::manage(new Gtk::Label{_("Tree preferences are temporarily limited in GTK4 build.")}));
-    return box;
+    auto vbox_nodes_icons = Gtk::manage(new Gtk::Box{Gtk::Orientation::VERTICAL});
+
+    auto radiobutton_node_icon_cherry = Gtk::manage(new Gtk::CheckButton{_("Use Different Cherries per Level")});
+    auto radiobutton_node_icon_custom = Gtk::manage(new Gtk::CheckButton{_("Use Selected Icon")});
+    radiobutton_node_icon_custom->set_group(*radiobutton_node_icon_cherry);
+    auto radiobutton_node_icon_none = Gtk::manage(new Gtk::CheckButton{_("No Icon")});
+    radiobutton_node_icon_none->set_group(*radiobutton_node_icon_cherry);
+    auto checkbutton_aux_icon_hide = Gtk::manage(new Gtk::CheckButton{_("Hide Right Side Auxiliary Icon")});
+    checkbutton_aux_icon_hide->set_active(_pConfig->auxIconHide);
+
+    auto c_icon_button = Gtk::manage(new Gtk::Button{});
+    c_icon_button->set_icon_name(CtStockIcon::at(_pConfig->defaultIconText));
+    auto c_icon_hbox = Gtk::manage(new Gtk::Box{Gtk::Orientation::HORIZONTAL, 2/*spacing*/});
+    c_icon_hbox->append(*radiobutton_node_icon_custom);
+    c_icon_hbox->append(*c_icon_button);
+
+    vbox_nodes_icons->append(*radiobutton_node_icon_cherry);
+    vbox_nodes_icons->append(*c_icon_hbox);
+    vbox_nodes_icons->append(*radiobutton_node_icon_none);
+    vbox_nodes_icons->append(*checkbutton_aux_icon_hide);
+    Gtk::Frame* frame_nodes_icons = new_managed_frame_with_align(_("Default Text Nodes Icons"), vbox_nodes_icons);
+
+    radiobutton_node_icon_cherry->set_active(_pConfig->nodesIcons == "c");
+    radiobutton_node_icon_custom->set_active(_pConfig->nodesIcons == "b");
+    radiobutton_node_icon_none->set_active(_pConfig->nodesIcons == "n");
+
+    auto vbox_nodes_startup = Gtk::manage(new Gtk::Box{Gtk::Orientation::VERTICAL});
+
+    auto radiobutton_nodes_startup_restore = Gtk::manage(new Gtk::CheckButton{_("Restore Expanded/Collapsed Status")});
+    auto radiobutton_nodes_startup_expand = Gtk::manage(new Gtk::CheckButton{_("Expand all Nodes")});
+    radiobutton_nodes_startup_expand->set_group(*radiobutton_nodes_startup_restore);
+    auto radiobutton_nodes_startup_collapse = Gtk::manage(new Gtk::CheckButton{_("Collapse all Nodes")});
+    radiobutton_nodes_startup_collapse->set_group(*radiobutton_nodes_startup_restore);
+    auto checkbutton_nodes_bookm_exp = Gtk::manage(new Gtk::CheckButton{_("Nodes in Bookmarks Always Visible")});
+    checkbutton_nodes_bookm_exp->set_active(_pConfig->nodesBookmExp);
+    checkbutton_nodes_bookm_exp->set_sensitive(_pConfig->restoreExpColl != CtRestoreExpColl::ALL_EXP);
+
+    vbox_nodes_startup->append(*radiobutton_nodes_startup_restore);
+    vbox_nodes_startup->append(*radiobutton_nodes_startup_expand);
+    vbox_nodes_startup->append(*radiobutton_nodes_startup_collapse);
+    vbox_nodes_startup->append(*checkbutton_nodes_bookm_exp);
+    Gtk::Frame* frame_nodes_startup = new_managed_frame_with_align(_("Nodes Status at Startup"), vbox_nodes_startup);
+
+    radiobutton_nodes_startup_restore->set_active(_pConfig->restoreExpColl == CtRestoreExpColl::FROM_STR);
+    radiobutton_nodes_startup_expand->set_active(_pConfig->restoreExpColl == CtRestoreExpColl::ALL_EXP);
+    radiobutton_nodes_startup_collapse->set_active(_pConfig->restoreExpColl == CtRestoreExpColl::ALL_COLL);
+
+    auto vbox_misc_tree = Gtk::manage(new Gtk::Box{Gtk::Orientation::VERTICAL});
+    auto hbox_tree_nodes_names_width = Gtk::manage(new Gtk::Box{Gtk::Orientation::HORIZONTAL, 4/*spacing*/});
+    auto checkbutton_tree_nodes_names_wrap_ena = Gtk::manage(new Gtk::CheckButton{_("Tree Nodes Names Wrapping Width")});
+    checkbutton_tree_nodes_names_wrap_ena->set_active(_pConfig->cherryWrapEnabled);
+    Glib::RefPtr<Gtk::Adjustment> adj_tree_nodes_names_width = Gtk::Adjustment::create(_pConfig->cherryWrapWidth, 10, 10000, 1);
+    auto spinbutton_tree_nodes_names_width = Gtk::manage(new Gtk::SpinButton{adj_tree_nodes_names_width});
+    spinbutton_tree_nodes_names_width->set_value(_pConfig->cherryWrapWidth);
+    spinbutton_tree_nodes_names_width->set_sensitive(_pConfig->cherryWrapEnabled);
+    hbox_tree_nodes_names_width->append(*checkbutton_tree_nodes_names_wrap_ena);
+    hbox_tree_nodes_names_width->append(*spinbutton_tree_nodes_names_width);
+    auto checkbutton_tree_right_side = Gtk::manage(new Gtk::CheckButton{_("Display Tree on the Right Side")});
+    checkbutton_tree_right_side->set_active(_pConfig->treeRightSide);
+    auto checkbutton_tree_click_focus_text = Gtk::manage(new Gtk::CheckButton{_("Move Focus to Text at Mouse Click")});
+    checkbutton_tree_click_focus_text->set_active(_pConfig->treeClickFocusText);
+    auto checkbutton_tree_click_expand = Gtk::manage(new Gtk::CheckButton{_("Expand Node at Mouse Click")});
+    checkbutton_tree_click_expand->set_active(_pConfig->treeClickExpand);
+
+    vbox_misc_tree->append(*hbox_tree_nodes_names_width);
+    vbox_misc_tree->append(*checkbutton_tree_right_side);
+    vbox_misc_tree->append(*checkbutton_tree_click_focus_text);
+    vbox_misc_tree->append(*checkbutton_tree_click_expand);
+    Gtk::Frame* frame_misc_tree = new_managed_frame_with_align(_("Miscellaneous"), vbox_misc_tree);
+
+    auto pMainBox = Gtk::manage(new Gtk::Box{Gtk::Orientation::VERTICAL, 3/*spacing*/});
+    pMainBox->set_margin_start(6);
+    pMainBox->set_margin_top(6);
+    pMainBox->append(*frame_nodes_icons);
+    pMainBox->append(*frame_nodes_startup);
+    pMainBox->append(*frame_misc_tree);
+
+    checkbutton_tree_nodes_names_wrap_ena->signal_toggled().connect([this,
+                                                                     checkbutton_tree_nodes_names_wrap_ena,
+                                                                     spinbutton_tree_nodes_names_width](){
+        _pConfig->cherryWrapEnabled = checkbutton_tree_nodes_names_wrap_ena->get_active();
+        spinbutton_tree_nodes_names_width->set_sensitive(_pConfig->cherryWrapEnabled);
+        need_restart(RESTART_REASON::TREE_NODE_WRAP);
+    });
+    spinbutton_tree_nodes_names_width->signal_value_changed().connect([this, spinbutton_tree_nodes_names_width](){
+        _pConfig->cherryWrapWidth = spinbutton_tree_nodes_names_width->get_value_as_int();
+        need_restart(RESTART_REASON::TREE_NODE_WRAP);
+    });
+    checkbutton_tree_right_side->signal_toggled().connect([this, checkbutton_tree_right_side](){
+        _pConfig->treeRightSide = checkbutton_tree_right_side->get_active();
+        apply_for_each_window([](CtMainWin* win) { win->config_switch_tree_side(); });
+    });
+    checkbutton_tree_click_focus_text->signal_toggled().connect([this, checkbutton_tree_click_focus_text](){
+        _pConfig->treeClickFocusText = checkbutton_tree_click_focus_text->get_active();
+    });
+    checkbutton_tree_click_expand->signal_toggled().connect([this, checkbutton_tree_click_expand](){
+        _pConfig->treeClickExpand = checkbutton_tree_click_expand->get_active();
+    });
+
+    radiobutton_node_icon_cherry->signal_toggled().connect([this, radiobutton_node_icon_cherry](){
+        if (!radiobutton_node_icon_cherry->get_active()) return;
+        _pConfig->nodesIcons = "c";
+        apply_for_each_window([](CtMainWin* win) { win->get_tree_store().update_nodes_icon(Gtk::TreeModel::iterator(), false); });
+    });
+    radiobutton_node_icon_custom->signal_toggled().connect([this, radiobutton_node_icon_custom](){
+        if (!radiobutton_node_icon_custom->get_active()) return;
+        _pConfig->nodesIcons = "b";
+        apply_for_each_window([](CtMainWin* win) { win->get_tree_store().update_nodes_icon(Gtk::TreeModel::iterator(), false); });
+    });
+    radiobutton_node_icon_none->signal_toggled().connect([this, radiobutton_node_icon_none](){
+        if (!radiobutton_node_icon_none->get_active()) return;
+        _pConfig->nodesIcons = "n";
+        apply_for_each_window([](CtMainWin* win) { win->get_tree_store().update_nodes_icon(Gtk::TreeModel::iterator(), false); });
+    });
+    c_icon_button->signal_clicked().connect([this, c_icon_button](){
+        auto itemStore = CtChooseDialogListStore::create();
+        int pathCurrIdx{0};
+        int pathSelectIdx{0};
+        for (const auto i : CtConst::NODE_CUSTOM_ICONS_ORDERED) {
+            itemStore->add_row(CtStockIcon::at(i), std::to_string(i), "");
+            if (i == _pConfig->defaultIconText) {
+                pathSelectIdx = pathCurrIdx;
+            }
+            ++pathCurrIdx;
+        }
+        auto res = CtDialogs::choose_item_dialog(*this,
+                                                 _("Select Node Icon"),
+                                                 itemStore,
+                                                 nullptr/*single_column_name*/,
+                                                 std::to_string(pathSelectIdx),
+                                                 std::make_pair(200, _pConfig->winRect[3]));
+        if (res) {
+            _pConfig->defaultIconText = std::stoi(res->get_value(itemStore->columns.key));
+            c_icon_button->set_icon_name(res->get_value(itemStore->columns.stock_id));
+            apply_for_each_window([](CtMainWin* win) { win->get_tree_store().update_nodes_icon(Gtk::TreeModel::iterator(), false);});
+        }
+    });
+    radiobutton_nodes_startup_restore->signal_toggled().connect([this, radiobutton_nodes_startup_restore, checkbutton_nodes_bookm_exp](){
+        if (!radiobutton_nodes_startup_restore->get_active()) return;
+        _pConfig->restoreExpColl = CtRestoreExpColl::FROM_STR;
+        checkbutton_nodes_bookm_exp->set_sensitive(true);
+    });
+    radiobutton_nodes_startup_expand->signal_toggled().connect([this, radiobutton_nodes_startup_expand, checkbutton_nodes_bookm_exp](){
+        if (!radiobutton_nodes_startup_expand->get_active()) return;
+        _pConfig->restoreExpColl = CtRestoreExpColl::ALL_EXP;
+        checkbutton_nodes_bookm_exp->set_sensitive(false);
+    });
+    radiobutton_nodes_startup_collapse->signal_toggled().connect([this, radiobutton_nodes_startup_collapse, checkbutton_nodes_bookm_exp](){
+        if (!radiobutton_nodes_startup_collapse->get_active()) return;
+        _pConfig->restoreExpColl = CtRestoreExpColl::ALL_COLL;
+        checkbutton_nodes_bookm_exp->set_sensitive(true);
+    });
+    checkbutton_nodes_bookm_exp->signal_toggled().connect([this, checkbutton_nodes_bookm_exp](){
+        _pConfig->nodesBookmExp = checkbutton_nodes_bookm_exp->get_active();
+    });
+    checkbutton_aux_icon_hide->signal_toggled().connect([this, checkbutton_aux_icon_hide](){
+        _pConfig->auxIconHide = checkbutton_aux_icon_hide->get_active();
+        apply_for_each_window([this](CtMainWin* win) { win->get_tree_view().get_column(CtTreeView::AUX_ICON_COL_NUM)->set_visible(!_pConfig->auxIconHide); });
+    });
+
+    return pMainBox;
 #else
     auto vbox_nodes_icons = Gtk::manage(new Gtk::Box{Gtk::ORIENTATION_VERTICAL});
 

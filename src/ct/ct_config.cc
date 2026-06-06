@@ -332,6 +332,8 @@ void CtConfig::_populate_keyfile_from_data()
     _uKeyFile->set_boolean(_currentGroup, "embfile_mfname_ondisk", embfileMFNameOnDisk);
     _uKeyFile->set_integer(_currentGroup, "embfile_max_size", embfileMaxSize);
     _uKeyFile->set_boolean(_currentGroup, "line_wrapping", lineWrapping);
+    _uKeyFile->set_boolean(_currentGroup, "enable_vim_mode", enableVimMode);
+    _uKeyFile->set_boolean(_currentGroup, "remember_vim_mode", rememberVimMode);
     _uKeyFile->set_boolean(_currentGroup, "auto_smart_quotes", autoSmartQuotes);
     _uKeyFile->set_boolean(_currentGroup, "camelcase_autolink", camelCaseAutoLink);
     _uKeyFile->set_boolean(_currentGroup, "url_autolink", urlAutoLink);
@@ -651,6 +653,15 @@ void CtConfig::_populate_data_from_keyfile()
     {
         _populate_string_from_keyfile("spell_check_lang", &spellCheckLang);
     }
+    _populate_bool_from_keyfile("remember_vim_mode", &rememberVimMode);
+    _populate_bool_from_keyfile("enable_vim_mode", &enableVimMode);
+#if GTKMM_MAJOR_VERSION >= 4 && defined(_WIN32)
+    // Keep Vim mode opt-in at startup unless the user explicitly asked to
+    // remember it; this keeps normal IME text entry as the default.
+    if (not rememberVimMode) {
+        enableVimMode = false;
+    }
+#endif
     _populate_bool_from_keyfile("show_line_numbers", &showLineNumbers);
     _populate_bool_from_keyfile("scroll_beyond_last_line", &scrollBeyondLastLine);
     _populate_bool_from_keyfile("spaces_instead_tabs", &spacesInsteadTabs);

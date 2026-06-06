@@ -29,6 +29,15 @@
 #include "ct_logging.h"
 #include "ct_misc_utils.h"
 
+#if GTKMM_MAJOR_VERSION >= 4
+namespace {
+bool ct_table_gtk4_has_modifier(Gdk::ModifierType state, Gdk::ModifierType modifier)
+{
+    return (state & modifier) != Gdk::ModifierType::NO_MODIFIER_MASK;
+}
+}
+#endif
+
 CtTableCommon::CtTableCommon(CtMainWin* pCtMainWin,
                              const int colWidthDefault,
                              const int charOffset,
@@ -199,6 +208,143 @@ bool CtTableCommon::on_cell_key_press_event(GdkEventKey* event)
     if (index >= 0) {
         const size_t nextRowIdx = index / get_num_columns();
         const size_t nextColIdx = index % get_num_columns();
+        if ( nextRowIdx < get_num_rows() and
+             nextColIdx < get_num_columns() )
+        {
+            _currentRow = nextRowIdx;
+            _currentColumn = nextColIdx;
+            grab_focus();
+        }
+        else {
+            _pCtMainWin->get_ct_actions()->table_row_add();
+            if ( nextRowIdx < get_num_rows() and
+                 nextColIdx < get_num_columns() )
+            {
+                _currentRow = nextRowIdx;
+                _currentColumn = nextColIdx;
+                grab_focus();
+            }
+        }
+        return true;
+    }
+    return false;
+}
+#else
+void CtTableCommon::on_table_button_pressed_gtk4(Gtk::GestureClick& click, int n_press, Gtk::Widget& parent, double x, double y)
+{
+    _pCtMainWin->get_ct_actions()->curr_table_anchor = this;
+    if (click.get_current_button() == 3) {
+        _pCtMainWin->get_ct_actions()->object_set_selection(this);
+        popup_cell_menu_gtk4(parent, x, y);
+        click.set_state(Gtk::EventSequenceState::CLAIMED);
+    }
+    else if (n_press != 2 and n_press != 3) {
+        _pCtMainWin->get_ct_actions()->object_set_selection(this);
+    }
+}
+
+void CtTableCommon::popup_cell_menu_gtk4(Gtk::Widget& parent, double x, double y)
+{
+    if (not _pCtMainWin->user_active()) return;
+    const size_t rowIdx = current_row();
+    const size_t colIdx = current_column();
+    _pCtMainWin->get_ct_actions()->curr_table_anchor = this;
+    const bool first_row = 0 == rowIdx;
+    const bool first_col = 0 == colIdx;
+    const bool last_row = get_num_rows()-1 == rowIdx;
+    const bool last_col = get_num_rows() and get_num_columns()-1 == colIdx;
+    _pCtMainWin->get_ct_menu().popup_menu_table_cell_at_widget4(parent, x, y, first_row, first_col, last_row, last_col);
+}
+
+bool CtTableCommon::on_cell_key_pressed_gtk4(guint keyval, Gdk::ModifierType state)
+{
+    if (not _pCtMainWin->user_active()) return false;
+    const size_t rowIdx = current_row();
+    const size_t colIdx = current_column();
+    _pCtMainWin->get_ct_actions()->curr_table_anchor = this;
+    int index{-1};
+    if (keyval == GDK_KEY_Tab or keyval == GDK_KEY_ISO_Left_Tab) {
+        if (ct_table_gtk4_has_modifier(state, Gdk::ModifierType::SHIFT_MASK)) {
+            index = static_cast<int>(rowIdx * get_num_columns() + colIdx) - 1;
+        }
+        else {
+            index = static_cast<int>(rowIdx * get_num_columns() + colIdx) + 1;
+        }
+    }
+    else if (ct_table_gtk4_has_modifier(state, Gdk::ModifierType::CONTROL_MASK)) {
+        if (not ct_table_gtk4_has_modifier(state, Gdk::ModifierType::ALT_MASK)) {
+            if (keyval == GDK_KEY_space) {
+                CtTextView& textView = _pCtMainWin->get_text_view();
+                Gtk::TextIter text_iter = textView.get_buffer()->get_iter_at_child_anchor(getTextChildAnchor());
+                text_iter.forward_char();
+                textView.get_buffer()->place_cursor(text_iter);
+                textView.mm().grab_focus();
+                return true;
+            }
+        }
+        if (keyval == GDK_KEY_backslash) {
+            if (ct_table_gtk4_has_modifier(state, Gdk::ModifierType::ALT_MASK)) {
+                if (rowIdx > 0) {
+                    index = static_cast<int>((rowIdx-1) * get_num_columns() + colIdx);
+                }
+            }
+            else if ((rowIdx+1) < get_num_rows()) {
+                index = static_cast<int>((rowIdx+1) * get_num_columns() + colIdx);
+            }
+        }
+        if (GDK_KEY_Return == keyval or GDK_KEY_KP_Enter == keyval) {
+            return _on_cell_key_press_alt_or_ctrl_enter();
+        }
+    }
+    else if (ct_table_gtk4_has_modifier(state, Gdk::ModifierType::ALT_MASK)) {
+        if (GDK_KEY_Return == keyval or GDK_KEY_KP_Enter == keyval) {
+            return _on_cell_key_press_alt_or_ctrl_enter();
+        }
+    }
+    else if (GDK_KEY_Up == keyval) {
+        if (not get_is_light()) {
+            const int curr_line_num = get_curr_cell_curr_line_num();
+            if (0 == curr_line_num and rowIdx > 0) {
+                index = static_cast<int>((rowIdx - 1) * get_num_columns() + colIdx);
+            }
+        }
+    }
+    else if (GDK_KEY_Down == keyval) {
+        if (not get_is_light()) {
+            const int curr_line_num = get_curr_cell_curr_line_num();
+            const int max_line_num = get_curr_cell_max_line_num();
+            if (max_line_num == curr_line_num and rowIdx < (get_num_rows()-1)) {
+                index = static_cast<int>((rowIdx + 1) * get_num_columns() + colIdx);
+            }
+        }
+    }
+    else if (GDK_KEY_Left == keyval) {
+        if (not get_is_light()) {
+            const int curr_offset = get_curr_cell_curr_offset();
+            if (0 == curr_offset) {
+                const int curr_index = static_cast<int>(rowIdx * get_num_columns() + colIdx);
+                if (curr_index > 0) {
+                    index = curr_index - 1;
+                }
+            }
+        }
+    }
+    else if (GDK_KEY_Right == keyval) {
+        if (not get_is_light()) {
+            const int curr_offset = get_curr_cell_curr_offset();
+            const int max_offset = get_curr_cell_max_offset();
+            if (max_offset == curr_offset) {
+                const int curr_index = static_cast<int>(rowIdx * get_num_columns() + colIdx);
+                const int max_index = static_cast<int>(get_num_rows() * get_num_columns()) - 1;
+                if (curr_index < max_index) {
+                    index = curr_index + 1;
+                }
+            }
+        }
+    }
+    if (index >= 0) {
+        const size_t nextRowIdx = static_cast<size_t>(index) / get_num_columns();
+        const size_t nextColIdx = static_cast<size_t>(index) % get_num_columns();
         if ( nextRowIdx < get_num_rows() and
              nextColIdx < get_num_columns() )
         {
@@ -402,6 +548,38 @@ void CtTableHeavy::_new_text_cell_attach(const size_t rowIdx, const size_t colId
 #if GTKMM_MAJOR_VERSION < 4 && !defined(GTKMM_DISABLE_DEPRECATED)
     textView.signal_populate_popup().connect(sigc::mem_fun(*this, &CtTableCommon::on_cell_populate_popup));
     textView.signal_key_press_event().connect(sigc::mem_fun(*this, &CtTableCommon::on_cell_key_press_event), false);
+#else
+    auto* pTextView = &textView;
+    auto click = Gtk::GestureClick::create();
+    click->set_button(0);
+    click->set_propagation_phase(Gtk::PropagationPhase::CAPTURE);
+    click->signal_pressed().connect([this, rowIdx, colIdx, pTextView, click](int n_press, double x, double y) {
+        set_current_row_column(rowIdx, colIdx);
+        on_table_button_pressed_gtk4(*click, n_press, *pTextView, x, y);
+    });
+    textView.add_controller(click);
+
+    auto key = Gtk::EventControllerKey::create();
+    key->signal_key_pressed().connect([this, rowIdx, colIdx, pTextView](guint keyval, guint, Gdk::ModifierType state) -> bool {
+        set_current_row_column(rowIdx, colIdx);
+        if (keyval == GDK_KEY_Menu) {
+            Gtk::TextIter iter_insert = curr_cell_text_view().get_buffer()->get_insert()->get_iter();
+            Gdk::Rectangle strong;
+            Gdk::Rectangle weak;
+            curr_cell_text_view().mm().get_cursor_locations(iter_insert, strong, weak);
+            int x = 0;
+            int y = 0;
+            curr_cell_text_view().mm().buffer_to_window_coords(Gtk::TextWindowType::WIDGET,
+                                                               strong.get_x(),
+                                                               strong.get_y() + strong.get_height(),
+                                                               x,
+                                                               y);
+            popup_cell_menu_gtk4(*pTextView, x, y);
+            return true;
+        }
+        return on_cell_key_pressed_gtk4(keyval, state);
+    }, false);
+    textView.add_controller(key);
 #endif
 
     _grid.attach(pTextCell->get_text_view().mm(), colIdx, rowIdx, 1/*# cell horiz*/, 1/*# cell vert*/);

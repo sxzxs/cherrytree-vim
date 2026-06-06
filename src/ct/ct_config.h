@@ -113,6 +113,8 @@ public:
     std::string                                 taStyleScheme{"user-2"};
     std::string                                 coStyleScheme{"cobalt-darkened"};
     bool                                        enableSpellCheck{false};
+    bool                                        enableVimMode{false};
+    bool                                        rememberVimMode{false};
     std::string                                 spellCheckLang;
     bool                                        showLineNumbers{false};
     bool                                        scrollBeyondLastLine{true};

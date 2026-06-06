@@ -149,7 +149,7 @@ CtTreeView::CtTreeView(CtConfig* pCtConfig)
 {
     set_headers_visible(false);
     set_enable_search(false);
-    signal_query_tooltip().connect(sigc::mem_fun(*this, &CtTreeView::_on_query_tooltip));
+    signal_query_tooltip().connect(sigc::mem_fun(*this, &CtTreeView::_on_query_tooltip), false);
     if (_pCtConfig->treeTooltips) {
         set_tooltips_enable(true/*on*/);
     }
@@ -167,8 +167,13 @@ bool CtTreeView::_on_query_tooltip(int x, int y, bool keyboard_tooltip, const Gl
     GtkTreeModel* pModel = nullptr;
     GtkTreePath* pPath = nullptr;
     GtkTreeIter treeIter;
+#if GTKMM_MAJOR_VERSION >= 4
+    if (not gtk_tree_view_get_tooltip_context(gobj(), x, y, keyboard_tooltip,
+                                              &pModel, &pPath, &treeIter)) {
+#else
     if (not gtk_tree_view_get_tooltip_context(gobj(), &x, &y, keyboard_tooltip,
                                               &pModel, &pPath, &treeIter)) {
+#endif
         return false;
     }
 
